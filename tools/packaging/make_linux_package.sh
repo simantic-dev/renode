@@ -24,7 +24,7 @@ then
     exit 1
 fi
 
-DIR=renode_$VERSION--dotnet
+DIR=renode_$VERSION
 
 # Contents of this variable should be pasted verbatim into renode-test script.
 INSTALL_DIR=/opt/renode
@@ -101,6 +101,7 @@ fpm -s dir -t deb\
     -d polkit-1-auth-agent\
     -d libc6-dev\
     -d gcc\
+    -d libwebkit2gtk-4.1-0\
     --deb-no-default-config-files\
     "${GENERAL_FLAGS[@]}" 
 
@@ -117,6 +118,7 @@ fpm -s dir -t rpm\
      -d libgdiplus\
      -d screen\
      -d polkit\
+     -d webkit2gtk4.1\
      "${GENERAL_FLAGS[@]}" >/dev/null
 
 rpm=(renode*rpm)
@@ -124,7 +126,7 @@ mv $rpm $OUTPUT
 echo "Created a Fedora package in $PACKAGES/$rpm"
 ### create arch package
 fpm -s dir -t pacman --pacman-compression xz \
-    -d libgdiplus -d gtk3 -d screen -d polkit -d gcc -d python3 -d python-pip \
+    -d libgdiplus -d gtk3 -d screen -d polkit -d gcc -d python3 -d python-pip -d webkit2gtk-4.1 \
     "${GENERAL_FLAGS[@]}" >/dev/null
 
 arch=(renode*.pkg.tar.xz)
@@ -132,7 +134,7 @@ mv $arch $OUTPUT
 echo "Created an Arch package in $PACKAGES/$arch"
 
 ### create portable package
-PKG=renode-$VERSION.linux-dotnet.tar.gz
+PKG=renode-$VERSION.linux.tar.gz
 
 # Create tar
 # Requires a separate scripts because we don't know it's location

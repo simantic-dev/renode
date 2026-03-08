@@ -32,6 +32,7 @@ CLEAN=false
 PACKAGES=false
 NIGHTLY=false
 PORTABLE=false
+UI=false
 SOURCE_PACKAGE=false
 HEADLESS=false
 SKIP_FETCH=false
@@ -50,7 +51,7 @@ HOST_ARCH="i386"
 CMAKE_COMMON="${RENODE_EXTRA_CMAKE_ARGS:-}"
 
 function print_help() {
-  echo "Usage: $0 [-cdvspnt] [-b properties-file.csproj] [--no-gui] [--skip-fetch] [--profile-build] [--external-lib-only] [--tlib-export-compile-commands] [--external-lib-arch <arch>] [--host-arch i386|aarch64] [--source-package] [-- <ARGS>]"
+  echo "Usage: $0 [-cdvspnt] [-b properties-file.csproj] [--no-gui] [--skip-fetch] [--profile-build] [--external-lib-only] [--tlib-export-compile-commands] [--external-lib-arch <arch>] [--host-arch i386|aarch64] [--source-package] [--ui] [-- <ARGS>]"
   echo
   echo "-c                                clean instead of building"
   echo "-d                                build Debug configuration"
@@ -77,6 +78,7 @@ function print_help() {
   echo "--host-arch                       build with a specific tcg host architecture (default: i386)"
   echo "--skip-dotnet-target-generation   don't generate 'Directory.Build.targets' file, useful when experimenting with different build settings"
   echo "--tcg-opcode-backtrace            collect a backtrace for each emitted TCG opcode, to track internal TCG errors (implies Debug configuration)"
+  echo "--ui                              rebuild the web-based UI"
   echo "<ARGS>                            arguments to pass to the dotnet build system"
 }
 
@@ -189,6 +191,9 @@ do
 
           CMAKE_COMMON+=" -DTCG_OPCODE_BACKTRACE=ON"
           ;;
+        "ui")
+          UI=true
+          ;;
         *)
           print_help
           exit 1
@@ -279,16 +284,21 @@ fi
 # Set correct RID
 if $ON_LINUX; then
     RID="linux-x64"
+    UI_RID="linux_x64"
     if [[ $HOST_ARCH == "aarch64" ]]; then
         RID="linux-arm64"
+        UI_RID="linux_arm64"
     fi
 elif $ON_OSX; then
     RID="osx-x64"
+    UI_RID="mac_x64"
     if [[ $HOST_ARCH == "aarch64" ]]; then
         RID="osx-arm64"
+        UI_RID="mac_arm64"
     fi
 elif $ON_WINDOWS; then
     RID="win-x64"
+    UI_RID="win_x64"
 fi
 
 if [[ $GENERATE_DOTNET_BUILD_TARGET = true ]]; then
@@ -365,31 +375,30 @@ then
 fi
 
 CORES_PATH="$ROOT_PATH/src/Infrastructure/src/Emulator/Cores"
+UI_PATH="$ROOT_PATH/src/UI"
 
 # clean instead of building
 if $CLEAN
 then
-    for project_dir in $(find "$(get_path "${ROOT_PATH}/src")" -iname '*.csproj' -exec dirname '{}' \;)
-    do
-      for dir in {bin,obj}/{Debug,Release}
-      do
-        output_dir="$(get_path "${project_dir}/${dir}")"
-        if [[ -d "${output_dir}" ]]
-        then
-          echo "Removing: ${output_dir}"
-          rm -rf "${output_dir}"
-        fi
-      done
-    done
-
-    # Manually clean the main output directory as it's location is non-standard
-    main_output_dir="$(get_path "${OUTPUT_DIRECTORY}/bin")"
-    if [[ -d "${main_output_dir}" ]]
+  remove_dir() {
+    output_dir="$(get_path "$1")"
+    if [[ -d "${output_dir}" ]]
     then
-      echo "Removing: ${main_output_dir}"
-      rm -rf "${main_output_dir}"
+      echo "Removing: ${output_dir}"
+      rm -rf "${output_dir}"
     fi
-    exit 0
+  }
+  for project_dir in $(find "$(get_path "${ROOT_PATH}/src")" -iname '*.csproj' -exec dirname '{}' \;)
+  do
+    for dir in {bin,obj}/{Debug,Release}
+    do
+      remove_dir "${project_dir}/${dir}"
+    done
+  done
+
+  # Manually clean the main output directories as it's location is non-standard
+  remove_dir "${OUTPUT_DIRECTORY}/bin"
+  exit 0
 fi
 
 # Check if a full rebuild is needed
@@ -559,6 +568,22 @@ if [[ $RID == "osx-arm64" ]]; then
   fi
 fi
 
+BIN_EXT=""
+if [[ "$DETECTED_OS" == "windows" ]]; then
+  BIN_EXT=".exe"
+fi
+
+UI_BIN="$OUT_BIN_DIR/renode-ui$BIN_EXT"
+
+if [[ "$UI_BIN" != "/"* ]]; then
+  UI_BIN="$PWD/$UI_BIN"
+fi
+
+if $UI; then
+  "$UI_PATH/scripts/build_neutralino.sh"
+  cp "$UI_PATH/neutralino/dist/renode-ui/renode-ui-$UI_RID$BIN_EXT" "$UI_BIN"
+fi
+
 # build packages after successful compilation
 params=""
 
@@ -600,6 +625,7 @@ fi
 
 if $PACKAGES
 then
+    export UI_BIN
     if $NET
     then
         # dotnet package on linux uses a separate script
@@ -608,7 +634,7 @@ then
             # maxcpucount:1 to avoid an error with multithreaded publish
             eval "dotnet publish -maxcpucount:1 -f $TFM --self-contained false $(build_args_helper "${PARAMS[@]}") $TARGET"
             export RID TFM
-            $ROOT_PATH/tools/packaging/make_linux_dotnet_package.sh $params
+            $ROOT_PATH/tools/packaging/make_linux_package.sh $params
         elif $ON_WINDOWS
         then
             # No Non portable dotnet package on windows yet
@@ -626,13 +652,14 @@ then
             # Only dotnet packages are supported on Windows
             echo "Only dotnet packages are supported on Windows. Rerun build.sh with --net -t to build a Windows package"
         else
-            $ROOT_PATH/tools/packaging/make_${DETECTED_OS}_packages.sh $params
+            $ROOT_PATH/tools/packaging/make_${DETECTED_OS}_mono_packages.sh $params
         fi
     fi
 fi
 
 if $PORTABLE
 then
+    export UI_BIN
     PARAMS+=(p:PORTABLE=true)
     if $NET
     then
@@ -640,11 +667,11 @@ then
         echo "RID = $RID"
         eval "dotnet publish -maxcpucount:1 -r $RID -f $TFM --self-contained true $(build_args_helper "${PARAMS[@]}") $TARGET"
         export RID TFM
-        $ROOT_PATH/tools/packaging/make_${DETECTED_OS}_portable_dotnet.sh $params
+        $ROOT_PATH/tools/packaging/make_${DETECTED_OS}_portable.sh $params
     else
         if $ON_LINUX
         then
-            $ROOT_PATH/tools/packaging/make_linux_portable.sh $params
+            $ROOT_PATH/tools/packaging/make_linux_mono_portable.sh $params
         else
             echo "Portable packages for Mono are only available on Linux. Exiting!"
             exit 1
