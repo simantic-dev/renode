@@ -71,6 +71,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{F8A034B1-54D
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Emulator", "Emulator", "{EA6A40C6-B8AD-4079-BDA9-EBFA2588D78D}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Analog", "src\Analog\src\Analog_NET.csproj", "{663E40AA-F151-446E-AFB5-11ED1631AC89}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -483,6 +485,22 @@ Global
 		{45473847-8AF8-4BAF-B768-442C6875B8CF}.ReleaseMono|Any CPU.Build.0 = Release|Any CPU
 		{45473847-8AF8-4BAF-B768-442C6875B8CF}.ReleaseWindows|Any CPU.ActiveCfg = Release|Any CPU
 		{45473847-8AF8-4BAF-B768-442C6875B8CF}.ReleaseWindows|Any CPU.Build.0 = Release|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.DebugHeadless|Any CPU.ActiveCfg = Debug|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.DebugHeadless|Any CPU.Build.0 = Debug|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.DebugMono|Any CPU.ActiveCfg = Debug|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.DebugMono|Any CPU.Build.0 = Debug|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.DebugWindows|Any CPU.ActiveCfg = Debug|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.DebugWindows|Any CPU.Build.0 = Debug|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.Release|Any CPU.Build.0 = Release|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.ReleaseHeadless|Any CPU.ActiveCfg = Release|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.ReleaseHeadless|Any CPU.Build.0 = Release|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.ReleaseMono|Any CPU.ActiveCfg = Release|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.ReleaseMono|Any CPU.Build.0 = Release|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.ReleaseWindows|Any CPU.ActiveCfg = Release|Any CPU
+		{663E40AA-F151-446E-AFB5-11ED1631AC89}.ReleaseWindows|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -514,6 +532,8 @@ Global
 		{EE62FCD8-B2F8-45B5-8E61-7D0E210A3708} = {CD9D4CF9-BD98-4D57-A5EF-EA5C3C75CB0C}
 		{41219131-67B0-49AC-9265-A64EFC662B40} = {CD9D4CF9-BD98-4D57-A5EF-EA5C3C75CB0C}
 		{687F17E8-940B-4FF9-87AA-DF3E5AE02EFD} = {CD9D4CF9-BD98-4D57-A5EF-EA5C3C75CB0C}
+                # Analog = src (top-level)
+		{663E40AA-F151-446E-AFB5-11ED1631AC89} = {DFDAE07D-D5F1-4C9E-99F2-98E57E36D0E0}
                 # Infrastructure = src (1st)
 		{683A80BF-80F4-4013-A3B8-F614C6BDE371} = {DFDAE07D-D5F1-4C9E-99F2-98E57E36D0E0}
                 # src (2nd) = Infrastructure

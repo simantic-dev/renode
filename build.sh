@@ -33,6 +33,7 @@ PACKAGES=false
 NIGHTLY=false
 PORTABLE=false
 UI=false
+ANALOG=false
 SOURCE_PACKAGE=false
 HEADLESS=false
 SKIP_FETCH=false
@@ -79,6 +80,7 @@ function print_help() {
   echo "--skip-dotnet-target-generation   don't generate 'Directory.Build.targets' file, useful when experimenting with different build settings"
   echo "--tcg-opcode-backtrace            collect a backtrace for each emitted TCG opcode, to track internal TCG errors (implies Debug configuration)"
   echo "--ui                              rebuild the web-based UI"
+  echo "--analog                          build with analog simulation enabled"
   echo "<ARGS>                            arguments to pass to the dotnet build system"
 }
 
@@ -193,6 +195,9 @@ do
           ;;
         "ui")
           UI=true
+          ;;
+        "analog")
+          ANALOG=true
           ;;
         *)
           print_help
@@ -423,6 +428,10 @@ popd > /dev/null
 
 PARAMS+=(p:Configuration="${CONFIGURATION}${BUILD_TARGET}" p:GenerateFullPaths=true p:Platform="\"$BUILD_PLATFORM\"" p:Architecture="$HOST_ARCH")
 
+if $ANALOG; then
+  PARAMS+=(p:ANALOG=true)
+fi
+
 # Paths for tlib
 CORES_BUILD_PATH="$CORES_PATH/obj/$CONFIGURATION"
 CORES_BIN_PATH="$CORES_PATH/bin/$CONFIGURATION"
@@ -588,6 +597,10 @@ fi
 if $UI; then
   NO_COLOR=true "$UI_PATH/scripts/build_neutralino.sh"
   cp "$UI_PATH/neutralino/dist/renode-ui/renode-ui-$UI_RID$BIN_EXT" "$UI_BIN"
+fi
+
+if $ANALOG; then
+  $ROOT_PATH/src/Analog/scripts/build_ms_sim.sh
 fi
 
 # build packages after successful compilation
