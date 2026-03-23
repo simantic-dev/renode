@@ -46,7 +46,8 @@ The following packages formats are available:
 * [`renode-latest.pkg.tar.xz`](https://builds.renode.io/renode-latest.pkg.tar.xz) - Arch Linux package
 * [`renode-latest.x86_64.rpm`](https://builds.renode.io/renode-latest.x86_64.rpm) - Red Hat / Fedora package
 * [`renode-latest.deb`](https://builds.renode.io/renode-latest.deb) - Debian-based distribution package
-* [`renode-latest.dmg`](https://builds.renode.io/renode-latest.dmg) - macOS package
+* [`renode-latest.osx-arm64-portable.dmg`](https://builds.renode.io/renode-latest.osx-arm64-portable.dmg) - macOS package for Apple Silicon (arm64) macs
+* [`renode-latest.osx-x64-portable.dmg`](https://builds.renode.io/renode-latest.osx-x64-portable.dmg) - macOS package for Intel (x86_64) macs
 * [`renode-latest.windows-portable.zip`](https://builds.renode.io/renode-latest.windows-portable.zip) - Windows portable package, without installer
 * [`renode-latest.setup.exe`](https://builds.renode.io/renode-latest.setup.exe) - Windows installer
 * [`renode-latest.tar.xz`](https://builds.renode.io/renode-latest.tar.xz) - Renode sources
@@ -54,6 +55,11 @@ The following packages formats are available:
 #### Stable releases
 
 Stable, numbered releases and their release notes are available in the [Releases section](https://github.com/renode/renode/releases) on GitHub.
+
+#### Installation from homebrew tap
+On macOS both stable and nightly versions of Renode can be installed with [Homebrew](https://brew.sh/) from our custom tap.
+To install the stable version use `brew install renode/tap/renode`, or `brew install renode/tap/renode-nightly` for the latest nightly build.
+This will install all dependencies, including preconfiguring the python environment for `renode-test`
 
 ### Using the Linux portable release
 

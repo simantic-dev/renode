@@ -36,11 +36,16 @@ Create Machine
     ...                             cpu.Log(LogLevel.Error, "Unsupported opcode: {0} @ 0x{1:X}", instr, fault_pc)
     Execute Command                 cpu AddHook 0 """${hook}"""
 
-    Create Log Tester               0.000001  # Low timeout, since we're testing single instructions at a time.
+    Create Log Tester               1  # Low timeout, since we're testing single instructions at a time.
     Register Failing Log String     Unsupported opcode
 
+Read Register R${index}
+    ${value_str}=                   Execute Command  cpu GetRegister "R${index}"
+    ${value}=                       Evaluate  $value_str.strip()
+    RETURN                          ${value}
+
 Set Register Q${index} To ${value_128_bit}
-    ${values_32_bit}=               Split Into N Bit Values  32  ${value_128_bit}
+    ${values_32_bit}=               Split N Bit Value Into M Bit Values  128  32  ${value_128_bit}
     FOR  ${offset}  ${value}  IN ENUMERATE  @{values_32_bit}
         # Q registers are made up of 4 adjacent S registers.
         ${register}=                    Evaluate  int($index)*4 + int($offset)
@@ -55,15 +60,15 @@ Read Register Q${index}
         ${register_value}=              Execute Command  cpu GetRegister "s${register}"
         Append To List                  ${s_register_contents}  ${{ $register_value.strip() }}
     END
-    ${q_register_value}=            Combine N Into 128 Bit Value  32  ${s_register_contents}
+    ${q_register_value}=            Combine N Bit Values Into M Bit Value  32  128  ${s_register_contents}
     RETURN                          ${q_register_value}
 
 Register Q${index} Should Contain ${value_128_bit}
     [Arguments]                     ${message}=${EMPTY}  ${element_size}=32
     ${q_register_value}=            Read Register Q${index}
 
-    ${actual_elements}=             Split Into N Bit Values  ${element_size}  ${q_register_value}
-    ${expected_elements}=           Split Into N Bit Values  ${element_size}  ${value_128_bit}
+    ${actual_elements}=             Split N Bit Value Into M Bit Values  128  ${element_size}  ${q_register_value}
+    ${expected_elements}=           Split N Bit Value Into M Bit Values  128  ${element_size}  ${value_128_bit}
 
     ${zipped}=                      Evaluate  list(zip($actual_elements, $expected_elements))
     FOR  ${element_index}  ${pair}  IN ENUMERATE  @{zipped}
@@ -282,6 +287,71 @@ Test VPT
         END
     END
 
+${signed:(Signed|Unsigned)} ${kind:Logical|Arithmetic|Saturating|Rounding} Shift ${direction:(Left|Right)} Long Instruction Should Produce Correct Result With Input ${input}
+    Reset Emulation
+    Create Machine
+
+    ${shift_by}=                    Set Variable  6
+    @{op_segments}=                 Split N Bit Value Into M Bit Values  64  32  ${input}
+    ${op_lower}                     ${op_upper}=  Set Variable  @{op_segments}
+    Execute Command                 cpu SetRegister "R1" ${op_upper}
+    Execute Command                 cpu SetRegister "R0" ${op_lower}
+
+    # Only saturating|rounding shifts specify whether they're signed/unsigned
+    IF  ${{ $kind.lower() in ['saturating', 'rounding'] }}
+        ${sign_char}=                   Set Variable If  '${signed}'.lower() == 'signed'
+        ...                             s  # signed
+        ...                             u  # unsigned
+    ELSE
+        ${sign_char}=                   Set Variable  ${EMPTY}
+    END
+
+    IF  '${kind}'.lower() == 'logical'
+        ${kind_char}=                   Set Variable  l
+    ELSE IF  '${kind}'.lower() == 'arithmetic'
+        ${kind_char}=                   Set Variable  a
+    ELSE IF  '${kind}'.lower() == 'saturating'
+        ${kind_char}=                   Set Variable  q
+    ELSE IF  '${kind}'.lower() == 'rounding'
+        ${kind_char}=                   Set Variable  r
+    ELSE
+        Fail                            Unknown kind: ${kind}
+    END
+
+    ${shift_char}=                  Set Variable If  ${{ $kind.lower() in ['saturating', 'rounding'] }}
+    ...                             sh  # for some reason, only saturating|rounding instructions use "sh" to abbreviate "shift"
+    ...                             s
+    ${direction_char}=              Set Variable If  '${direction}'.lower() == 'left'
+    ...                             l  # left
+    ...                             r  # right
+    # Shift instructions are named in a structured manner:
+    # 1. the sign (signed, unsigned, implied) becomes s, u or is excluded
+    # 2. the kind (logical, arithmetic) becomes either l or a
+    # 3. "shift" becomes s or sh
+    # 4. the direction (left, right) becomes either l or r
+    # 5. the length (long, i.e. 64 bits) becomes l
+    ${instruction}=                 Set Variable  ${sign_char}${kind_char}${shift_char}${direction_char}l
+    Load Program And Execute        ${instruction} R0, R1, #${shift_by}
+
+    # Calls a helper function defined in mve-helpers.py: `do_shift_op`.
+    ${expected_result}=             Do Shift Op
+    ...                             width_bits=64
+    ...                             value=${input}
+    ...                             shift_by=${shift_by}
+    ...                             direction=${{ $direction.lower() }}
+    ...                             saturating=${{ $kind.lower() == 'saturating' }}
+    ...                             rounding=${{ $kind.lower() == 'rounding' }}
+    ...                             signed=${{ $signed.lower() == 'signed' }}
+    ...                             logical=${{ $kind.lower() == 'logical' }}
+
+    ${actual_result_upper}=         Read Register R1
+    ${actual_result_lower}=         Read Register R0
+    ${actual_result_segments}=      Create List  ${actual_result_lower}  ${actual_result_upper}
+    ${actual_result}=               Combine N Bit Values Into M Bit Value  32  64  ${actual_result_segments}
+
+    Should Be Equal As Integers     ${actual_result}  ${expected_result}
+    ...                             msg=expected `${instruction} ${input} #${shift_by}` to result in ${expected_result} but actual is ${actual_result}
+
 *** Test Cases ***
 Vector-Vector Instructions Should Produce Correct Results
     [Template]                      Vector-Vector ${instruction}.${sign}${element_size} Should Produce Correct Result
@@ -415,6 +485,19 @@ Bitwise Vector-Vector Instructions Should Produce Correct Results
         ${instruction}
     END
 
+VMVN Bitwise Vector Instruction Should Produce Correct Results
+    Create Machine
+
+    ${op1}=                         Set Variable  0x80003000b00070007000b00030007fff
+    Set Register Q0 To ${op1}
+
+    Load Program And Execute        vmvn q1, q0
+    # Calls a helper function defined in mve_helpers.py: `compute_vector_vmvn_result`.
+    # They're the partial functions at the very bottom (there's no def, just an assignment).
+    ${expected_value}=              Run Keyword  Compute Vector VMVN Result
+    ...                             ${op1}
+    Register Q1 Should Contain ${expected_value}  element_size=128
+
 VPT Should Mask Correct Lanes
     # Checks all the possible predications for VPT block
     Create Machine
@@ -516,3 +599,24 @@ VPT Should Use Predicated Instruction Version
     ...                             action=T
 
     Register Q2 Should Contain ${expected_value}  element_size=128
+
+Shift Long Instructions Should Produce Correct Results
+    [Template]                      ${signed} ${kind} Shift ${direction} Long Instruction Should Produce Correct Result With Input ${}
+
+    FOR  ${signed}  ${kind}  ${direction}  IN
+    ...  signed  arithmetic  right  # ASRL
+    ...  signed  logical  left  # LSLL
+    ...  signed  logical  right  # LSRL
+    ...  signed  saturating  left  # SQSHLL
+    ...  unsigned  saturating  left  # UQSHLL
+    ...  signed  rounding  right  # SRSHRL
+    ...  unsigned  rounding  right  # SRSHRL
+        FOR  ${input}  IN
+        ...  0x001333334199999D
+        ...  0x1234567887654321
+        ...  0x8765567812345678
+        ...  0x0000000000000000
+        ...  0xffffffffffffffff
+            ${signed}                       ${kind}  ${direction}  ${input}
+        END
+    END

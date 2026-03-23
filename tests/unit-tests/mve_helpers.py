@@ -14,35 +14,39 @@ def assert_is_n_chars(string: str, n: int):
     ), f"String '{string}' must be {n} characters long but it's {length}"
 
 
-def split_into_n_bit_values(n: int, value_128_bit: str) -> list[str]:
+def split_n_bit_value_into_m_bit_values(n: int, m: int, value_n_bit: str) -> list[str]:
     """
-    Converts a string containing a base-16 number (with 0x prefix) into
-    a list of strings containing base-16 n-bit values (with 0x prefix).
+    Converts a string containing an n-bit base-16 number (with 0x prefix) into
+    a list of strings containing base-16 m-bit values (with 0x prefix).
     The list is ordered such that the indices correspond to lane numbers.
     """
-    assert_starts_with_0x_prefix(value_128_bit)
-    value_128_bit = value_128_bit[2:]
-    assert_is_n_chars(value_128_bit, 32)
+    assert_starts_with_0x_prefix(value_n_bit)
+    value_n_bit = value_n_bit[2:]
+    expected_hex_chars = n // 4
+    assert_is_n_chars(value_n_bit, expected_hex_chars)
     assert n % 4 == 0, f"`n` must be divisible by 4. {n} is not"
+    assert m % 4 == 0, f"`m` must be divisible by 4. {m} is not"
 
-    chars_in_n_bit_hex = n // 4
+    chars_in_m_bit_hex = m // 4
     return [
-        "0x" + value_128_bit[i : i + chars_in_n_bit_hex]
+        "0x" + value_n_bit[i : i + chars_in_m_bit_hex]
         # The indexing is reversed because we place the most significant bits first in the list.
-        for i in reversed(range(0, len(value_128_bit), chars_in_n_bit_hex))
+        for i in reversed(range(0, len(value_n_bit), chars_in_m_bit_hex))
     ]
 
 
-def combine_n_into_128_bit_value(n: int, values_n_bit: list[str]) -> str:
+def combine_n_bit_values_into_m_bit_value(
+    n: int, m: int, values_n_bit: list[str]
+) -> str:
     """
     Converts a list of strings containing base-16 n-bit values (with 0x prefix)
-    into a string containing a base-16 number (with 0x prefix).
+    into a string containing an m-bit base-16 number (with 0x prefix).
     The input list is expected to be ordered such that indices correspond to lane numbers.
     """
     list(map(assert_starts_with_0x_prefix, values_n_bit))
-    assert 128 % n == 0, f"128 must be divisible by `n`, but {n} is not"
+    assert m % n == 0, f"`m`={m} must be divisible by `n`, but {n} is not"
     length = len(values_n_bit)
-    expected_values = 128 // n
+    expected_values = m // n
     assert (
         length == expected_values
     ), f"Input list must contain {expected_values} values, but it contains {length}"
@@ -93,14 +97,18 @@ def compute_vector_vector_op(
 
     elements1 = [
         hex_to_int(value)
-        for value in split_into_n_bit_values(element_size, operand1_128_bit)
+        for value in split_n_bit_value_into_m_bit_values(
+            128, element_size, operand1_128_bit
+        )
     ]
     elements2 = [
         hex_to_int(value)
-        for value in split_into_n_bit_values(element_size, operand2_128_bit)
+        for value in split_n_bit_value_into_m_bit_values(
+            128, element_size, operand2_128_bit
+        )
     ]
     result_elements = [int_to_hex(op(e1, e2)) for (e1, e2) in zip(elements1, elements2)]
-    return combine_n_into_128_bit_value(element_size, result_elements)
+    return combine_n_bit_values_into_m_bit_value(element_size, 128, result_elements)
 
 
 def op_with_complex_rotation(
@@ -141,11 +149,15 @@ def compute_vector_complex_rotation_op_result(
 
     elements1 = [
         hex_to_int(value)
-        for value in split_into_n_bit_values(element_size, operand1_128_bit)
+        for value in split_n_bit_value_into_m_bit_values(
+            128, element_size, operand1_128_bit
+        )
     ]
     elements2 = [
         hex_to_int(value)
-        for value in split_into_n_bit_values(element_size, operand2_128_bit)
+        for value in split_n_bit_value_into_m_bit_values(
+            128, element_size, operand2_128_bit
+        )
     ]
 
     # The complex numbers are encoded as pairs of elements,
@@ -166,7 +178,7 @@ def compute_vector_complex_rotation_op_result(
         for (e1, e2) in zip(complex1, complex2)
         for component in split_into_ints(op_with_rotation(e1, e2, rotation))
     ]
-    return combine_n_into_128_bit_value(element_size, result_elements)
+    return combine_n_bit_values_into_m_bit_value(element_size, 128, result_elements)
 
 
 def compute_vector_scalar_op(
@@ -182,22 +194,28 @@ def compute_vector_scalar_op(
 
     elements1 = [
         hex_to_int(value)
-        for value in split_into_n_bit_values(element_size, operand1_128_bit)
+        for value in split_n_bit_value_into_m_bit_values(
+            128, element_size, operand1_128_bit
+        )
     ]
     op2 = hex_to_int(operand2_32_bit)
     result_elements = [int_to_hex(op(e1, op2)) for e1 in elements1]
-    return combine_n_into_128_bit_value(element_size, result_elements)
+    return combine_n_bit_values_into_m_bit_value(element_size, 128, result_elements)
 
 
 def compute_bitwise_vector_vector_op(
     op: Callable[[int, int], int],
     operand1_128_bit: str,
-    operand2_128_bit: str,
+    operand2_128_bit: str = None,
 ) -> str:
     # We can do operation on the whole register at once
     element1 = int(operand1_128_bit, 16)
-    element2 = int(operand2_128_bit, 16)
-    result_elements = op(element1, element2)
+    if operand2_128_bit:
+        element2 = int(operand2_128_bit, 16)
+        result_elements = op(element1, element2)
+    else:
+        result_elements = op(element1)
+
     return f"0x{result_elements:0>32x}"
 
 
@@ -215,9 +233,21 @@ def signed_to_hex(bits: int, signed_value: int) -> str:
 def twos_complement(bits: int, hexstr: str) -> int:
     """Converts a string containing a signed base-16 integer of size `bits` into a signed python integer."""
     value = int(hexstr, 16)  # This int will be unsigned.
-    if value & (1 << (bits - 1)):  # Check if sign bit is set (i.e. number is negative).
-        value -= 1 << bits  # Convert to negative version of the same number.
-    return value
+    return to_twos_complement_signed(bits, value)
+
+
+def to_twos_complement_signed(bits: int, unsigned_value: int) -> int:
+    """Converts an unsigned integer of size `bits` into a signed python integer."""
+    sign_bit_mask = 1 << (bits - 1)
+    # Check if sign bit is set (i.e. number is negative).
+    if unsigned_value & sign_bit_mask:
+        unsigned_value -= 1 << bits  # Convert to negative version of the same number.
+    return unsigned_value
+
+
+def to_twos_complement_unsigned(bits: int, signed_value: int) -> int:
+    """Converts a signed python integer into an unsigned integer of size `bits`."""
+    return signed_value & mask(bits)
 
 
 def floor_div_complex(number: complex, divisor: int) -> complex:
@@ -290,7 +320,7 @@ def compute_vpr_mask(
 
     operand1 = [
         hex_to_int(value)
-        for value in split_into_n_bit_values(element_size, operand1_str)
+        for value in split_n_bit_value_into_m_bit_values(128, element_size, operand1_str)
     ]
 
     if with_scalar:
@@ -298,7 +328,7 @@ def compute_vpr_mask(
     else:
         operand2 = [
             hex_to_int(value)
-            for value in split_into_n_bit_values(element_size, operand2_str)
+            for value in split_n_bit_value_into_m_bit_values(128, element_size, operand2_str)
         ]
 
     mask = []
@@ -323,14 +353,61 @@ def apply_vpr_mask(original: str, update: str, mask: list[bool], action: str):
     assert element_count in [16, 8, 4, 1], f"Invalid mask size: {element_count}"
     element_size = 128 // element_count
 
-    original = split_into_n_bit_values(element_size, original)
-    update = split_into_n_bit_values(element_size, update)
+    original = split_n_bit_value_into_m_bit_values(128, element_size, original)
+    update = split_n_bit_value_into_m_bit_values(128, element_size, update)
     result = []
 
     for from_original, from_update, active in zip(original, update, mask):
         result.append(from_update if active else from_original)
 
-    return combine_n_into_128_bit_value(element_size, result)
+    return combine_n_bit_values_into_m_bit_value(element_size, 128, result)
+
+
+def do_shift_op(
+    width_bits: int,
+    value: int,
+    shift_by: int,
+    direction: str,
+    saturating: bool,
+    rounding: bool,
+    signed: bool,
+    logical: bool,
+) -> str:
+    assert shift_by != 0, "shifting by 0 is not supported"
+    assert (
+        shift_by < width_bits
+    ), f"shift must be less than {width_bits}, but got {shift_by}"
+    assert (
+        direction == "left" or direction == "right"
+    ), f"direction must be left or right, but it's {direction}"
+    min_input = 0
+    max_input = (1 << width_bits) - 1
+    assert (
+        min_input <= value <= max_input
+    ), f"{value} must be in range: {min_input} <= value <= {max_input}"
+
+    if signed:
+        value = to_twos_complement_signed(width_bits, value)
+
+    if rounding:
+        # The technical reference manual for Armv8.1-M MVE specifies the
+        # rounding operations as performing this addition in order to
+        # round the value before shifting.
+        value = value + (1 << (shift_by - 1))
+
+    if direction == "left":
+        result = value << shift_by
+    else:
+        if logical:
+            result = (value & mask(width_bits)) >> shift_by
+        else:  # python's default shift is arithmetic
+            result = value >> shift_by
+
+    if saturating:
+        result, _ = saturate(width_bits, signed, result)
+
+    clamped_result = result & mask(width_bits)
+    return hex(clamped_result)
 
 
 # Partial applications of `compute_vector_op`.
@@ -382,6 +459,10 @@ compute_vector_vorn_result = partial(
 )
 compute_vector_veor_result = partial(
     compute_bitwise_vector_vector_op, lambda a, b: a ^ b
+)
+
+compute_vector_vmvn_result = partial(
+    compute_bitwise_vector_vector_op, lambda a: not_128(a)
 )
 
 
