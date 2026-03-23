@@ -1,6 +1,9 @@
 [submodule "src/Infrastructure"]
 	path = src/Infrastructure
 	url = git@github.com:simantic-dev/renode-infrastructure.git
+[submodule "src/Analog"]
+    path = src/Analog
+    url = git@github.com:simantic-dev/renode-ms.git
 [submodule "lib/termsharp"]
 	path = lib/termsharp
 	url = https://github.com/antmicro/termsharp.git
@@ -47,3 +50,6 @@
 [submodule "src/UI"]
 	path = src/UI
 	url = https://github.com/antmicro/renode-ui.git
+[submodule "src/src/Analog"]
+	path = src/src/Analog
+	url = git@github.com:simantic-dev/renode-ms.git
