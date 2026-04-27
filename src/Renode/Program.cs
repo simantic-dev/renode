@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2025 Antmicro
+// Copyright (c) 2010-2026 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -13,6 +13,9 @@ using Antmicro.Renode.Logging;
 using Antmicro.Renode.RobotFramework;
 using Antmicro.Renode.UI;
 using Antmicro.Renode.Utilities;
+#if !NET
+using Antmicro.Renode.Core;
+#endif
 
 namespace Antmicro.Renode
 {
@@ -30,6 +33,12 @@ namespace Antmicro.Renode
             {
                 return;
             }
+
+            MainWithOptions(options);
+        }
+
+        public static void MainWithOptions(Options options)
+        {
             if(options.Version)
             {
                 Console.Out.WriteLine(LongVersionString);
@@ -37,7 +46,7 @@ namespace Antmicro.Renode
             }
             ConfigureEnvironment(options);
 
-            /* 
+            /*
                 We noticed that the static constructors' initialization chain breaks non-deterministically on some Mono versions crashing Renode with NullReferenceException.
                 In the current version, EmulationManager's static constructor calls TypeManager that in turn uses Logger; Logger however requires EmulationManager to be functional.
                 This circular dependency seems to be a problem.
@@ -63,26 +72,23 @@ namespace Antmicro.Renode
             {
                 try
                 {
-                    if(optionsParsed)
+                    Antmicro.Renode.UI.CommandLineInterface.Run(options, (context) =>
                     {
-                        Antmicro.Renode.UI.CommandLineInterface.Run(options, (context) =>
+                        if(options.RobotFrameworkRemoteServerPort >= 0)
                         {
-                            if(options.RobotFrameworkRemoteServerPort >= 0)
-                            {
-                                var rf = new RobotFrameworkEngine();
-                                context.RegisterSurrogate(typeof(RobotFrameworkEngine), rf);
-                                rf.Start(options.RobotFrameworkRemoteServerPort);
-                            }
+                            var rf = new RobotFrameworkEngine();
+                            context.RegisterSurrogate(typeof(RobotFrameworkEngine), rf);
+                            rf.Start(options.RobotFrameworkRemoteServerPort);
+                        }
 #if NET
-                            if(options.ServerMode)
-                            {
-                                var wsAPI = new WebSockets.WebSocketAPI(options.ServerModeWorkDir);
-                                Emulator.BeforeExit += wsAPI.Dispose;
-                                wsAPI.Start();
-                            }
+                        if(options.ServerMode)
+                        {
+                            var wsAPI = new WebSockets.WebSocketAPI(options.ServerModeWorkDir);
+                            Emulator.BeforeExit += wsAPI.Dispose;
+                            wsAPI.Start();
+                        }
 #endif
-                        });
-                    }
+                    });
                 }
                 finally
                 {
@@ -142,10 +148,8 @@ namespace Antmicro.Renode
                     var version = entryAssembly == null ? ": Unknown version" : entryAssembly.GetName().Version.ToString();
 #if NET
                     var runtime = ".NET";
-#elif PLATFORM_WINDOWS
-                    var runtime = ".NET Framework";
 #else
-                    var runtime = "Mono";
+                    var runtime = RuntimeInfo.IsWindows() ? ".NET Framework" : "Mono";
 #endif
                     return string.Format("{0} v{1}\n  build: {2}\n  build type: {3}\n  runtime: {4} {5}",
                         name,

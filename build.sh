@@ -23,7 +23,6 @@ fi
 ROOT_PATH="$(cd "$(dirname $0)"; echo $PWD)"
 export ROOT_PATH
 OUTPUT_DIRECTORY="$ROOT_PATH/output"
-EXPORT_DIRECTORY=""
 
 UPDATE_SUBMODULES=false
 CONFIGURATION="Release"
@@ -63,7 +62,6 @@ function print_help() {
   echo "-n                                tag built packages as nightly"
   echo "-s                                update submodules"
   echo "-b                                custom build properties file"
-  echo "-o                                custom output directory"
   echo "--skip-fetch                      skip fetching submodules and additional resources"
   echo "--no-gui                          build with GUI disabled"
   echo "--force-net-framework-version     build against different version of .NET Framework than specified in the solution"
@@ -84,7 +82,7 @@ function print_help() {
   echo "<ARGS>                            arguments to pass to the dotnet build system"
 }
 
-while getopts "cdvpnstb:o:B:F:-:" opt
+while getopts "cdvpnstb:B:F:-:" opt
 do
   case $opt in
     c)
@@ -110,10 +108,6 @@ do
       ;;
     b)
       CUSTOM_PROP=$OPTARG
-      ;;
-    o)
-      EXPORT_DIRECTORY=$OPTARG
-      echo "Setting the output directory to $EXPORT_DIRECTORY"
       ;;
     B)
       RID=$OPTARG
@@ -317,7 +311,9 @@ if [[ $GENERATE_DOTNET_BUILD_TARGET = true ]]; then
     OS_SPECIFIC_TARGET_OPTS='<CsWinRTAotOptimizerEnabled>false</CsWinRTAotOptimizerEnabled>'
   fi
 
-cat <<EOF > "$(get_path "$PWD/Directory.Build.targets")"
+  BUILD_TARGETS_FILE=$(mktemp)
+  BUILD_TARGETS_PATH="$(get_path "$PWD/Directory.Build.targets")"
+  cat <<EOF > "$BUILD_TARGETS_FILE"
 <Project>
   <PropertyGroup>
     <TargetFrameworks>$TFM</TargetFrameworks>
@@ -326,6 +322,11 @@ cat <<EOF > "$(get_path "$PWD/Directory.Build.targets")"
 </Project>
 EOF
 
+  if [ ! -f "$BUILD_TARGETS_PATH" ] || ! cmp -s "$BUILD_TARGETS_FILE" "$BUILD_TARGETS_PATH"; then
+      mv "$BUILD_TARGETS_FILE" "$BUILD_TARGETS_PATH"
+  else
+      rm "$BUILD_TARGETS_FILE"
+  fi
 fi
 
 if $NET
@@ -371,7 +372,11 @@ else
       PROP_FILE="${CURRENT_PATH:=.}/src/Infrastructure/src/Emulator/Cores/windows-properties.csproj"
     fi
 fi
-cp "$PROP_FILE" "$OUTPUT_DIRECTORY/properties.csproj"
+
+PROP_PATH="$OUTPUT_DIRECTORY/properties.csproj"
+if [ ! -f "$PROP_PATH" ] || ! cmp -s "$PROP_FILE" "$PROP_PATH"; then
+    cp "$PROP_FILE" "$PROP_PATH"
+fi
 
 if ! $NET
 then
@@ -609,18 +614,6 @@ params=""
 if [ $CONFIGURATION == "Debug" ]
 then
     params="$params -d"
-fi
-
-if [ -n "$EXPORT_DIRECTORY" ]
-then
-    if [ "${DETECTED_OS}" != "linux" ]
-    then
-        echo "Custom output directory is currently available on Linux only"
-        exit 1
-    fi
-
-    $ROOT_PATH/tools/packaging/export_${DETECTED_OS}_workdir.sh $EXPORT_DIRECTORY $params
-    echo "Renode built to $EXPORT_DIRECTORY"
 fi
 
 if $NIGHTLY

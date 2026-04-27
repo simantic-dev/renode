@@ -5,12 +5,16 @@
 // Full license text is available in 'licenses/MIT.txt'.
 //
 using System;
-using System.IO;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Runtime.InteropServices;
 
 using Antmicro.Renode.Core;
 using Antmicro.Renode.Exceptions;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Peripherals.CPU;
 using Antmicro.Renode.Peripherals.Timers;
 using Antmicro.Renode.Utilities;
 using Antmicro.Renode.Utilities.Binding;
@@ -18,15 +22,25 @@ using Antmicro.Renode.Utilities.Binding;
 namespace Antmicro.Renode.Peripherals.SystemC
 {
     public class SystemCPeripheralNative : IDisposable, IBytePeripheral,
-        IWordPeripheral, IDoubleWordPeripheral, IQuadWordPeripheral
+        IWordPeripheral, IDoubleWordPeripheral, IQuadWordPeripheral,
+        INumberedGPIOOutput, IGPIOReceiver
     {
-        public SystemCPeripheralNative(IMachine machine, ulong simulationStepInNs)
+        public SystemCPeripheralNative(IMachine machine, ulong simulationStepInNs, int numberOfConnections = DefaultNumberOfConnections)
         {
+            sysbus = machine.GetSystemBus(this);
             systemcTimer = new LimitTimer(machine.ClockSource, FREQUENCY, this, nameof(systemcTimer), eventEnabled: true, enabled: false, limit: simulationStepInNs);
             systemcTimer.LimitReached += delegate
             {
                 SystemcStartSim((int)(simulationStepInNs));
             };
+
+            this.numberOfConnections = numberOfConnections;
+            var innerConnections = new Dictionary<int, IGPIO>();
+            for(int i = 0; i < numberOfConnections; i++)
+            {
+                innerConnections[i] = new GPIO();
+            }
+            Connections = new ReadOnlyDictionary<int, IGPIO>(innerConnections);
         }
 
         public void Dispose()
@@ -83,14 +97,99 @@ namespace Antmicro.Renode.Peripherals.SystemC
             TlmWrite(8, (long)value, (ulong)offset);
         }
 
+        public void OnGPIO(int number, bool value)
+        {
+            if(binder == null)
+            {
+                return;
+            }
+
+            if(number > numberOfConnections)
+            {
+                this.Log(LogLevel.Error, "Peripheral doesn't have GPIO number {0} (max: {1})", number, numberOfConnections);
+                return;
+            }
+
+            Connections[number].Set(value);
+            GpioWrite(number, value);
+        }
+
+        [Export]
+        public void InvalidateTranslationBlocks(ulong startAddress, ulong endAddress)
+        {
+            foreach(var cpu in sysbus.GetCPUs().OfType<TranslationCPU>())
+            {
+                cpu.OrderTranslationBlocksInvalidation(new IntPtr((long)startAddress), new IntPtr((long)endAddress));
+            }
+        }
+
+        [Export]
+        public void ReadBytesFromBus(ulong address, IntPtr data, int count)
+        {
+            var bytes = sysbus.ReadBytes(address, count, context: this);
+            Marshal.Copy(bytes, 0, data, count);
+        }
+
+        [Export]
+        public void WriteBytesToBus(ulong address, IntPtr data, int count)
+        {
+            var bytes = new byte[count];
+            Marshal.Copy(data, bytes, 0, count);
+            sysbus.WriteBytes(bytes, address, context: this);
+        }
+
+        [Export]
+        public int GetDirectMemPtr(ulong address, out ulong startAddress, out ulong endAddress, out IntPtr mappedAddress)
+        {
+            startAddress = 0;
+            endAddress = 0;
+            mappedAddress = IntPtr.Zero;
+
+            var targetMemory = sysbus.FindMemory(address);
+            if(!(targetMemory?.GetFileMappingParameters(address) is FileMappingParameters mapping))
+            {
+                return 0;
+            }
+
+            startAddress = mapping.StartAddress;
+            endAddress = mapping.EndAddress;
+            mappedAddress = mapping.MappedAddress;
+            return 1;
+        }
+
+        [Export]
+        public void UpdateGPIOConnections(int number, int value)
+        {
+            if(number > numberOfConnections)
+            {
+                this.Log(LogLevel.Error, "Peripheral doesn't have GPIO number {0} (max: {1})", number, numberOfConnections);
+                return;
+            }
+
+            Connections[number].Set(value == 0 ? false : true);
+        }
+
         public string SimulationFilePathLinux
         {
             get => simulationFilePath;
             set
             {
-#if PLATFORM_LINUX
-                SimulationFilePath = value;
-#endif
+                if(RuntimeInfo.IsLinux())
+                {
+                    SimulationFilePath = value;
+                }
+            }
+        }
+
+        public string SimulationFilePathWindows
+        {
+            get => simulationFilePath;
+            set
+            {
+                if(RuntimeInfo.IsWindows())
+                {
+                    SimulationFilePath = value;
+                }
             }
         }
 
@@ -121,26 +220,28 @@ namespace Antmicro.Renode.Peripherals.SystemC
             }
         }
 
+        public IReadOnlyDictionary<int, IGPIO> Connections { get; }
+
         private void InitBinder()
         {
-            string resourceFileName = Path.GetFileName(simulationFilePath);
-
-            foreach(var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            if(!Misc.TryCopyToTemporaryFile(simulationFilePath, out var copiedSimulationFilePath))
             {
-                if(assembly.TryFromResourceToTemporaryFile(simulationFilePath, out var resourceFilePath, resourceFileName))
-                {
-                    binder = new NativeBinder(this, resourceFilePath);
-                    break;
-                }
-                else
-                {
-                    throw new RecoverableException($"Cannot find library {resourceFilePath}");
-                }
+                throw new RecoverableException($"Cannot find library {simulationFilePath}");
+            }
+
+            try
+            {
+                binder = new NativeBinder(this, simulationFilePath);
+            }
+            catch(InvalidOperationException)
+            {
+                throw new RecoverableException($"Cannot find library {simulationFilePath}");
             }
         }
 
         private NativeBinder binder;
         private string simulationFilePath;
+        private readonly IBusController sysbus;
 
 #pragma warning disable 649
 
@@ -159,9 +260,17 @@ namespace Antmicro.Renode.Peripherals.SystemC
         [Import(UseExceptionWrapper = false)]
         private readonly Action<ulong, long, ulong> TlmWrite;
 
+        [Import(UseExceptionWrapper = false)]
+        private readonly Action<int, bool> GpioWrite;
+
 #pragma warning restore 649
 
         private readonly LimitTimer systemcTimer;
+        private readonly int numberOfConnections;
         private const int FREQUENCY = (int)1e9;
+
+        // Set to this value to maintain compatibility with the non-native peripheral model
+        // See: NumberOfGPIOPins in SystemCPeripheral
+        private const int DefaultNumberOfConnections = 64;
     }
 }

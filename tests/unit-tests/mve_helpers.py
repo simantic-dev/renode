@@ -63,6 +63,17 @@ def combine_n_bit_values_into_m_bit_value(
     )
 
 
+def combine_into_128_bit_value(values: list[int], signed=False) -> str:
+    """
+    Converts a list of integers into hexadecimal string representing Q register
+    """
+    element_size = 128 // len(values)
+    _, int_to_hex, _ = prepare_vector_op(element_size, signed)
+    return combine_n_bit_values_into_m_bit_value(
+        element_size, 128, list(map(int_to_hex, values))
+    )
+
+
 def prepare_vector_op(
     element_size: Union[str, int], treat_elements_as_signed: bool
 ) -> Tuple[Callable[[str], int], Callable[[int], str], int]:
@@ -109,6 +120,35 @@ def compute_vector_vector_op(
     ]
     result_elements = [int_to_hex(op(e1, e2)) for (e1, e2) in zip(elements1, elements2)]
     return combine_n_bit_values_into_m_bit_value(element_size, 128, result_elements)
+
+
+def compute_vector_to_scalar_op(
+    op: Callable[[int, int], int],
+    element_size_str: str,
+    operand1_128_bit: str,
+    operand2_128_bit: str,
+    additional_operand: str,
+    treat_elements_as_signed: bool,
+) -> str:
+    additional_operand = int(additional_operand, 16)
+    hex_to_int, int_to_hex, element_size = prepare_vector_op(
+        element_size_str, treat_elements_as_signed
+    )
+
+    elements1 = [
+        hex_to_int(value)
+        for value in split_n_bit_value_into_m_bit_values(
+            128, element_size, operand1_128_bit
+        )
+    ]
+    elements2 = [
+        hex_to_int(value)
+        for value in split_n_bit_value_into_m_bit_values(
+            128, element_size, operand2_128_bit
+        )
+    ]
+    result = additional_operand + op(elements1, elements2)
+    return hex(result & mask(32))
 
 
 def op_with_complex_rotation(
@@ -474,3 +514,9 @@ def compute_vdup_result(element_size_str: str, operand_32_bit: str):
         operand_32_bit,
         False,
     )
+
+
+compute_vector_to_scalar_vabav_result = partial(
+    compute_vector_to_scalar_op,
+    lambda a_v, b_v: sum([abs(a - b) for a, b in zip(a_v, b_v)]),
+)

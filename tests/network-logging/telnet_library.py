@@ -1,23 +1,31 @@
-import socket
 import asyncio
-from telnetlib3 import open_connection, TelnetReader
+from telnetlib3 import open_connection, TelnetReader, TelnetWriter
 
 ENCODING = "utf-8"
 
 reader: TelnetReader
+writer: TelnetWriter
 
 def telnet_connect(port: int) -> None:
-    global reader
-    
-    loop = asyncio.get_event_loop()
-    
+    global reader, writer
+
+    # Python 3.14+ doesn't implicitly create an event loop
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     # Coroutines with event loop required for robot tests
     coro = open_connection('localhost', port)
-    reader, _ = loop.run_until_complete(coro)
+    reader, writer = loop.run_until_complete(coro)  # type: ignore
+
+def telnet_write(text: str) -> None:
+    loop = asyncio.get_event_loop()
+    writer.write(text)
+    loop.run_until_complete(writer.drain())
     
 def telnet_read_until(until_string: str, timeout: int = 15) -> str:
-    global reader
-    
     loop = asyncio.get_event_loop()
 
     # Wrap the readuntil coroutine with wait_for to add timeout

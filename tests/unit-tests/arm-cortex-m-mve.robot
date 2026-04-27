@@ -5,7 +5,8 @@ Library                             String
 
 *** Variables ***
 ${START_ADDRESS}                    0x100
-${PLATFORM}                         @platforms/cpus/renesas-r7fa8m1a.repl
+${DATA_ADDRESS}                     0x22000000
+${PLATFORM}                         platforms/cpus/renesas-r7fa8m1a.repl
 
 *** Keywords ***
 Load Program And Execute
@@ -25,9 +26,19 @@ Load Program And Execute
     Wait For Log Entry              '${ASSEMBLY}' finished
 
 Create Machine
+    [Arguments]                     ${trustZoneEnabled}=${False}
+
     Execute Command                 mach create
-    Execute Command                 machine LoadPlatformDescription ${PLATFORM}
-    Execute Command                 machine LoadPlatformDescriptionFromString """fault: Memory.MappedMemory @ sysbus 0xFFFFFC00 { size: 0x400 }"""
+
+    ${platform_string}=             Catenate  SEPARATOR=\n
+    ...                             using "${PLATFORM}"
+    ...
+    ...                             cpu: {enableTrustZone: ${trustZoneEnabled}}
+                                    # Because our SP at start is set to 0, fault memory is used as a place to keep stack for when exception happens.
+                                    # This is mainly used for getting PC for the improperly handled instruction during run of Load Program And Execute keyword.
+    ...                             fault: Memory.MappedMemory @ sysbus 0xFFFFFC00 { size: 0x400 }
+
+    Execute Command                 machine LoadPlatformDescriptionFromString """${platform_string}"""
 
     # Register hook to make invalid instructions fail the test.
     ${hook}=                        Catenate  SEPARATOR=\n
@@ -83,6 +94,28 @@ Register Q${index} Should Contain ${value_128_bit}
         ...                             ${message} lane number ${lane_number}
     END
 
+Memory Should Be Equal
+    [Arguments]                     ${address}
+    ...                             ${expected_value}
+    ...                             ${element_size}
+    ...                             ${message}=${None}
+
+    IF  ${element_size} == 8
+        ${value}=                       Execute Command  sysbus ReadByte ${address}
+    ELSE IF  ${element_size} == 16
+        ${value}=                       Execute Command  sysbus ReadWord ${address}
+    ELSE IF  ${element_size} == 32
+        ${value}=                       Execute Command  sysbus ReadDoubleWord ${address}
+    ELSE
+        Fail                            Invalid element_size=${element_size}
+    END
+    ${value}=                       Evaluate  int(${value})
+    TRY
+        Should Be Equal As Integers     ${value}  ${expected_value}
+    EXCEPT
+        Fail                            ${message}: Value on address ${{hex(${address})}} assertion failed, actual: ${{hex(${value})}}, expected: ${{hex(${expected_value})}}
+    END
+
 Vector-Vector ${instruction:(vhadd|vhsub)}.${sign:(s|u)}${element_size} Should Produce Correct Result
     Reset Emulation
     Create Machine
@@ -103,6 +136,35 @@ Vector-Vector ${instruction:(vhadd|vhsub)}.${sign:(s|u)}${element_size} Should P
     ...                             ${op2}
     ...                             treat_elements_as_signed=${is_signed}
     Register Q2 Should Contain ${expected_value}  message=${instruction}.${sign}${element_size}  element_size=${element_size}
+
+Test Vector-Vector to Scalar Instruction
+    [Arguments]                     ${instruction}
+    ...                             ${element_size}
+    ...                             ${sign}
+    ...                             ${operand1}
+    ...                             ${operand2}
+    ...                             ${starting_result_operand}=0x00000000
+
+    Reset Emulation
+    Create Machine
+
+    Set Register Q0 To ${operand1}
+    Set Register Q1 To ${operand2}
+    Execute Command                 cpu SetRegister "r0" ${starting_result_operand}
+
+    Load Program And Execute        ${instruction}.${sign}${element_size} r0, q0, q1
+
+    ${is_signed}=                   Evaluate  $sign.lower() == "s"
+    # Calls a helper function defined in mve-helpers.py: `compute_vector_to_scalar_$insn_result`.
+    # They're the partial functions at the very bottom (there's no def, just an assignment).
+    ${expected_value}=              Run Keyword  Compute Vector to Scalar ${instruction} Result
+    ...                             ${element_size}
+    ...                             ${operand1}
+    ...                             ${operand2}
+    ...                             ${starting_result_operand}
+    ...                             treat_elements_as_signed=${is_signed}
+
+    Register Should Be Equal        r0  ${expected_value}  message=${instruction}.${sign}${element_size}
 
 Complex Vector-Vector ${instruction:(vcadd.i|vhcadd.s)}${element_size} ${rotation} Should Produce Correct Result
     Reset Emulation
@@ -285,6 +347,70 @@ Test VPT
             ${message}=                     Catenate  SEPARATOR=\n  @{step_messages}
             Fail                            ${instruction} failed on step ${index}\n${message}
         END
+    END
+
+Test VLD
+    # Writes values to memory in order: 0x00 0x01 0x02 0x03...
+    # And then using VLD instructions reads them resulting with interleaved values in the registers
+    # Example: Q1=[0x00 0x02 0x04 ...] and Q2=[0x01 0x03 0x05 ...]
+    [Arguments]                     ${stride}
+    ...                             ${element_size}
+    ${element_count}=               Evaluate  128 // ${element_size}
+
+    Reset Emulation
+    Create Machine
+
+    ${values}=                      Evaluate  list(range(${stride} * ${element_count}))  # [0, 1, 2, 3, ...
+    ${interleaved_values}=          Evaluate  [v for s in range(${stride}) for v in ${values}\[s::${stride}]]  # For VLD2.8 [0, 2, 4, ... 1, 3, 5,...
+
+    Execute Command                 cpu SetRegister "R0" ${DATA_ADDRESS}
+
+    # Writes values to memory
+    FOR  ${index}  ${value}  IN ENUMERATE  @{values}
+        ${position}=                    Evaluate  ${DATA_ADDRESS}+${index}*(${element_size} // 8)
+        IF  ${element_size} == 8
+            Execute Command                 sysbus WriteByte ${position} ${value}
+        ELSE IF  ${element_size} == 16
+            Execute Command                 sysbus WriteWord ${position} ${value}
+        ELSE IF  ${element_size} == 32
+            Execute Command                 sysbus WriteDoubleWord ${position} ${value}
+        ELSE
+            Fail                            Invalid element_size=${element_size}
+        END
+    END
+
+    # Creates assembly and calculates expected register values
+    ${assembly}=                    Create List
+    ${expected_values}=             Create List
+    FOR  ${s}  IN RANGE  ${stride}
+        ${register_list}=               Evaluate  ", ".join([f"Q{i}" for i in range(${stride})])
+        Append To List                  ${assembly}  VLD${stride}${s}.${element_size} {${register_list}}, [R0]
+        ${range}=                       Evaluate  $interleaved_values[${element_count}*${s}:${element_count}*(${s}+1)]
+        ${value}=                       Combine Into 128 Bit Value  ${range}
+        Append To List                  ${expected_values}  ${value}
+    END
+    ${assembly}=                    Catenate  SEPARATOR=;  @{assembly}
+    Load Program And Execute        ${assembly}
+
+    TRY
+        FOR  ${index}  ${value}  IN ENUMERATE  @{expected_values}
+            Register Q${index} Should Contain ${value}
+        END
+    EXCEPT
+        # Prints out register status in case of failure
+        ${info}=                        Create List  VLD${stride}.${element_size} Failed
+        FOR  ${index}  ${value}  IN ENUMERATE  @{expected_values}
+            ${result}=                      Read Register Q${index}
+
+            ${result_info}=                 Catenate  SEPARATOR=${\n}
+            ...                             Q${index}:
+            ...                             expected=${value}
+            ...                             ${SPACE*2}actual=${result}
+
+            Append To List                  ${info}  ${result_info}
+        END
+        ${info}=                        Catenate  SEPARATOR=\n  @{info}
+        Fail                            ${info}
     END
 
 ${signed:(Signed|Unsigned)} ${kind:Logical|Arithmetic|Saturating|Rounding} Shift ${direction:(Left|Right)} Long Instruction Should Produce Correct Result With Input ${input}
@@ -559,6 +685,31 @@ VPT Should Compare Properly
         END
     END
 
+VPT Floating Point Should Use Proper Comparison Type
+    # This is not a complete ARM floating-point comparison test
+    # It only check if comparison operators got decoded properly
+    # Floating Point values are formed in such a way that if we only compare positive numbers, they should produce the same comparison result as if they were decoded as unsigned integers
+    # We're using this property for this simple test
+    Create Machine
+
+    ${predicates}=                  Create List  E  # We want to check for comparison and reverse of it just in case
+    FOR  ${operand1}  ${operand2}  ${with_scalar}  IN
+    # Same test as VPT Should Mask Correct Lanes
+    # operand1=[1000 555.5 100 0]  vector-operand2=[500 1000 100 0]  scalar-operand2=555.5
+    ...  0x447a0000440ae00042c8000000000000  0x43fa0000447a000042c8000000000000  False
+    ...  0x447a0000440ae00042c8000000000000  0x440ae000  True
+        FOR  ${comparison}  IN  EQ  NE  GE  LT  GT  LE
+            Test VPT
+            ...                             data_type=F
+            ...                             element_size=32
+            ...                             comparison=${comparison}
+            ...                             predicates=${predicates}
+            ...                             with_scalar=${with_scalar}
+            ...                             operand1=${operand1}
+            ...                             operand2=${operand2}
+        END
+    END
+
 VPT Should Use Predicated Instruction Version
     # Some instruction in Tlib can use different implementation depending if they are predicated or not
     # This test checks one of these instructions to make sure it uses the predicated version in VPT block
@@ -600,6 +751,13 @@ VPT Should Use Predicated Instruction Version
 
     Register Q2 Should Contain ${expected_value}  element_size=128
 
+VLD Should Load and Interleave Data
+    FOR  ${stride}  IN  2  4
+        FOR  ${element_size}  IN  8  16  32
+            Test VLD                        ${stride}  ${element_size}
+        END
+    END
+
 Shift Long Instructions Should Produce Correct Results
     [Template]                      ${signed} ${kind} Shift ${direction} Long Instruction Should Produce Correct Result With Input ${}
 
@@ -618,5 +776,190 @@ Shift Long Instructions Should Produce Correct Results
         ...  0x0000000000000000
         ...  0xffffffffffffffff
             ${signed}                       ${kind}  ${direction}  ${input}
+        END
+    END
+
+VMRS Should Read From System Registers
+    Create Machine                  trustZoneEnabled=${True}
+
+    ${fpscr}=                       Set Variable  0xAA0F0F0F  # Arbitrary values for testing. FPSCR will be reset on context creation so we'll set it later
+    Execute Command                 cpu FPDSCR_NS 0xA137FEEF  # Arbitrary values for testing
+    ${vpr}=                         Set Variable  0xA137FEEF  # Arbitrary values for testing. VPR will be reset on context creation so we'll set it later
+    Execute Command                 cpu SetRegister "Control" 0x00000000  # Bit 0 has to be unset to stay in Privilaged mode, bit 2 need to be unset to test FPCXTNS without context
+    Execute Command                 cpu SetRegister "R1" 0x0000000D  # New value for Control register to switch to User mode, need to remember to keep the FPCA set
+
+    ${assembly}=                    Catenate  SEPARATOR=\n
+    ...                             VMRS R0, FPCXTNS
+    ...                             VMRS R0, FPSCR  # Create FP context
+    ...                             VMRS R0, FPSCR
+    ...                             VMRS R0, FPSCR_nzcvqc
+    ...                             VMRS APSR_nzcv, FPSCR
+    ...                             VMRS R0, VPR
+    ...                             VMRS R0, P0
+    ...                             VMRS R0, FPCXTNS
+    ...                             MOV R0, #0  # Clean R0
+    ...                             VMRS R0, FPCXTS
+    ...                             MSR Control, R1  # Switch to User mode
+    ...                             VMRS R0, VPR
+
+    Execute Command                 cpu AssembleBlock ${START_ADDRESS} """${assembly}"""
+    Execute Command                 cpu PC ${START_ADDRESS}
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  0xA137FEEF  message=FPCXTNS (no FP context)  # There's no FP context so it'll load whole FPDSCR_NS register
+    Register Should Be Equal        FPSCR  0x40000  message=FPCXTNS (no FP context)  # FPSCR won't change from default
+
+    Execute Command                 cpu Step  # FP context got created
+    Register Should Be Equal        Control  0x0000000C  message=Context creation
+    Execute Command                 cpu SetRegister "FPSCR" ${fpscr}  # Set FPSCR and VPR to test values
+    Execute Command                 cpu SetRegister "VPR" ${vpr}
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  ${fpscr}  message=FPSCR
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  0xA8000000  message=FPSCR_nzcvqc  # Should only read 5 upper bits
+
+    Execute Command                 cpu Step
+    ${xpsr}=                        Execute Command  cpu GetRegister "CPSR"  # Cortex-M has XPSR instead of CPSR register, but we support access to it under CPSR name
+    ${xpsr_result}=                 Evaluate  str(int($xpsr.strip(),16) | (${fpscr} & 0xF0000000))
+    Register Should Be Equal        CPSR  ${xpsr_result}  message=XPSR  # Should only set 4 upper bits
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  ${vpr}  message=VPR (Privilaged)
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  0x0000FEEF  message=P0  # Should only read 16 lower bits
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  0x8A0F0F0F  message=FPCXTNS (with FP context)  # FP context exists so it'll load FPSCR[27:0] and Control[2] at 31th bit
+    Register Should Be Equal        FPSCR  ${fpscr}  message=FPCXTNS (with FP context)  # FPSCR won't change
+
+    Execute Command                 cpu Step 2
+    Register Should Be Equal        R0  0x8A0F0F0F  message=FPCXTS  # No matter if Floating Point context is enabled it'll load FPSCR
+    Register Should Be Equal        FPSCR  0xA137FEEF  message=FPCXTS  # FPSCR will update to FPDSCR_NS
+
+    Execute Command                 cpu Step 2
+    Register Should Be Equal        R0  0x8A0F0F0F  message=VPR (non Privilaged)  # In User mode read from VPR should be treated as a nop, so register value should be the same as before
+
+VMSR Should Write to System Registers
+    Create Machine                  trustZoneEnabled=${True}
+
+    ${fpscr}=                       Set Variable  0xAA0F0F0F
+
+    Execute Command                 cpu SetRegister "R0" 0xAA0F0F0F  # Arbitrary values for testing
+    Execute Command                 cpu SetRegister "R1" 0xA137FEEF  # Arbitrary values for testing
+    Execute Command                 cpu SetRegister "Control" 0x00000000  # Bit 0 has to be unset to stay in Privilaged mode, bit 2 need to be unset to test FPCXTNS without context
+    Execute Command                 cpu SetRegister "R10" 0x0000000D  # New value for Control register to switch to User mode, need to remember to keep the FPCA set
+
+    ${assembly}=                    Catenate  SEPARATOR=\n
+    ...                             VMSR FPCXTNS, R0
+    ...                             VMSR FPSCR_nzcvqc, R0
+    ...                             VMSR FPSCR, R0
+    ...                             VMSR P0, R1
+    ...                             VMSR VPR, R1
+    ...                             VMSR FPCXTNS, R1
+    ...                             VMSR FPCXTS, R0
+    ...                             MSR Control, R10  # Switch to User mode
+    ...                             VMSR VPR, R0
+
+    Execute Command                 cpu AssembleBlock ${START_ADDRESS} """${assembly}"""
+    Execute Command                 cpu PC ${START_ADDRESS}
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        FPSCR  0x40000  message=FPCXTNS (no FP context)  # There's no FP context so nothing will change
+    Register Should Be Equal        Control  0x00000000  message=FPCXTNS (no FP context)
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        Control  0x0000000C  message=Context creation
+    Register Should Be Equal        FPSCR  0xA8040000  message=FPSCR_nzcvqc  # Should only write 5 upper bits
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        FPSCR  ${fpscr}  message=FPSCR
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        VPR  0x0000FEEF  message=P0  # Should only write 16 lower bits
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        VPR  0xA137FEEF  message=VPR (Privilaged)
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        FPSCR  0x0137FEEF  message=FPCXTNS (with FP context)  # FP context exists so it'll load R1 to FPSCR[27:0] and R1[31] to Control[2]
+    Register Should Be Equal        Control  0x0000000C  message=FPCXTNS (with FP context)
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        FPSCR  0x0A0F0F0F  message=FPCXTS  # FPCXTS will get updated no matter the state of Floating Point context
+    Register Should Be Equal        Control  0x0000000C  message=FPCXTS
+
+    Execute Command                 cpu Step 2
+    Register Should Be Equal        VPR  0xA137FEEF  message=VPR (non Privilaged)  # In User mode write to VPR should be treated as a nop, so register value should be the same as before
+
+VSTR Should Store System Registers to Memory
+    Create Machine                  trustZoneEnabled=${True}  # Enable TrustZone to be able to modify CONTROL
+    Execute Command                 cpu SetRegister "Control" 0x0000000C  # Set CONTROL to show that FP context exists
+
+    ${starting_address}=            Evaluate  int(${DATA_ADDRESS})
+    Execute Command                 cpu SetRegister "R0" ${DATA_ADDRESS}
+    Execute Command                 cpu SetRegister "FPSCR" 0xAA0F0F0F  # Arbitrary values for testing
+    Execute Command                 cpu SetRegister "VPR" 0xA137FEEF  # Arbitrary values for testing
+
+    ${assembly}=                    Catenate  SEPARATOR=\n
+    ...                             VSTR FPSCR, [R0], #4
+    ...                             VSTR VPR, [R0]
+    ...                             VSTR P0, [R0, #4]!
+
+    Execute Command                 cpu AssembleBlock ${START_ADDRESS} """${assembly}"""
+    Execute Command                 cpu PC ${START_ADDRESS}
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  ${{$starting_address+4}}  message=FPSCR  # R0 was incremented
+    Memory Should Be Equal          ${{$starting_address}}  0xAA0F0F0F  32  message=FPSCR  # FPSCR was written to old R0 address
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  ${{$starting_address+4}}  message=VPR  # R0 stayed the same
+    Memory Should Be Equal          ${{$starting_address+4}}  0xA137FEEF  32  message=VPR  # VPR was written to current R0 address
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  ${{$starting_address+8}}  message=P0  # R0 was incremented
+    Memory Should Be Equal          ${{$starting_address+8}}  0x0000FEEF  32  message=P0  # P0 was written to updated R0 address
+
+VLDR Should Load System Registers From Memory
+    Create Machine                  trustZoneEnabled=${True}  # Enable TrustZone to be able to modify CONTROL
+    Execute Command                 cpu SetRegister "Control" 0x0000000C  # Set CONTROL to show that FP context exists
+
+    ${starting_address}=            Evaluate  int(${DATA_ADDRESS})
+    Execute Command                 cpu SetRegister "R0" ${DATA_ADDRESS}
+
+    Execute Command                 sysbus WriteDoubleWord ${starting_address} 0xAA0F0F0F  # Arbitrary values for testing
+    Execute Command                 sysbus WriteDoubleWord ${{$starting_address+4}} 0xA137FEEF  # Arbitrary values for testing
+    Execute Command                 sysbus WriteDoubleWord ${{$starting_address+8}} 0x12345678  # Arbitrary values for testing
+
+    ${assembly}=                    Catenate  SEPARATOR=\n
+    ...                             VLDR FPSCR, [R0], #4
+    ...                             VLDR VPR, [R0]
+    ...                             VLDR P0, [R0, #4]!
+
+    Execute Command                 cpu AssembleBlock ${START_ADDRESS} """${assembly}"""
+    Execute Command                 cpu PC ${START_ADDRESS}
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  ${{$starting_address+4}}  message=FPSCR  # R0 was incremented
+    Register Should Be Equal        FPSCR  0xAA0F0F0F  message=FPSCR  # FPSCR was read from old R0 address
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  ${{$starting_address+4}}  message=VPR  # R0 stayed the same
+    Register Should Be Equal        VPR  0xA137FEEF  message=VPR  # VPR was read from  current R0 address
+
+    Execute Command                 cpu Step
+    Register Should Be Equal        R0  ${{$starting_address+8}}  message=P0  # R0 was incremented
+    Register Should Be Equal        VPR  0xA1375678  message=P0  # P0 was read from  updated R0 address
+
+VABAV Should Produce Correct Results
+    FOR  ${operand1}  ${operand2}  ${starting_result_operand}  IN
+    ...  0x80005432803200830000003200210015  0x00500234002300438000003380230083  0x00000000  # Tests every element_size for both signed and unsigned versions
+    ...  0x80005432803200830000003200210015  0x00500234002300438000003380230083  0x81000000  # Test if original register data is added properly. Rda is unsigned
+        FOR  ${sign}  IN  S  U
+            FOR  ${element_size}  IN  8  16  32
+                Test Vector-Vector to Scalar Instruction  VABAV  ${element_size}  ${sign}  ${operand1}  ${operand2}  ${starting_result_operand}
+            END
         END
     END

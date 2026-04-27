@@ -41,7 +41,7 @@ Nightly builds of Renode for all systems are available at [builds.renode.io](htt
 The latest builds are always available as `renode-latest.*` packages.
 The following packages formats are available:
 * [`renode-latest.linux-portable.tar.gz`](https://builds.renode.io/renode-latest.linux-portable.tar.gz) - portable Linux package, embeds dotnet runtime
-* [`renode-latest.linux-portable-mono.tar.gz`](https://builds.renode.io/renode-latest.linux-portable-mono.tar.gz) - portable Linux package, embeds Mono runtime
+* [`renode-latest.linux-mono-portable.tar.gz`](https://builds.renode.io/renode-latest.linux-mono-portable.tar.gz) - portable Linux package, embeds Mono runtime
 * [`renode-latest.linux.tar.gz`](https://builds.renode.io/renode-latest.linux.tar.gz) - Linux prebuilt archive, requires dotnet installed on host
 * [`renode-latest.pkg.tar.xz`](https://builds.renode.io/renode-latest.pkg.tar.xz) - Arch Linux package
 * [`renode-latest.x86_64.rpm`](https://builds.renode.io/renode-latest.x86_64.rpm) - Red Hat / Fedora package
@@ -128,7 +128,7 @@ Install Renode with your preferred package manager using the provided `*.deb`, `
 #### macOS
 
 Use the provided `*.dmg` as normal. 
-Additionally, to use Renode from the command line on macOS, create appropriate aliases by adding `alias renode='mono /Applications/Renode.app/Contents/MacOS/bin/Renode.exe'` and `alias renode-test='/Applications/Renode.app/Contents/MacOS/tests/renode-test'` to your `.bashrc` or `.zshrc` file, depending on the shell you're using.
+Additionally, to use Renode from the command line on macOS, create appropriate aliases by adding `alias renode='/Applications/Renode.app/Contents/MacOS/renode'` and `alias renode-test='/Applications/Renode.app/Contents/MacOS/renode-test'` to your `.bashrc` or `.zshrc` file, depending on the shell you're using.
 
 #### Windows
 

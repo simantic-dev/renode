@@ -5,6 +5,7 @@
 - lib/options-parser/OptionsParserTests.csproj
 
 - heavy_tests:
+  - tests/platforms/zynqmp.robot
   - tests/peripherals/MCAN.robot
   - tests/platforms/Zedboard.robot
   - tests/peripherals/VirtIO.robot
@@ -18,7 +19,6 @@
 
 - tests/unit-tests/riscv-isa-tests.robot
 - tests/unit-tests/riscv-arch-tests.robot
-- tests/platforms/zynqmp.robot
 - tests/example.robot
 - tests/platforms/CC2538/cc2538_cryptoprocessor.robot
 - tests/platforms/QuarkC1000.robot
@@ -145,6 +145,7 @@
 - tests/peripherals/BME280.robot
 - tests/peripherals/MB85RC1MT.robot
 - tests/platforms/nucleo_f429zi.robot
+- tests/platforms/nucleo_f767zi.robot
 - tests/peripherals/SynopsysDWCEthernetQualityOfService.robot
 - tests/peripherals/S32K3XX_EMAC.robot
 - tests/unit-tests/ARMv8R_TCM.robot
@@ -153,6 +154,7 @@
 - tests/unit-tests/arm-performance-monitoring-unit.robot
 - tests/peripherals/ARM_GenericInterruptController.robot
 - tests/peripherals/ARM_SBSA_UART.robot
+- tests/peripherals/ArrayMemory.robot
 - tests/platforms/Versatile.robot
 - tests/unit-tests/arm-wfi-hook.robot
 - tests/platforms/Renesas_RA6M5.robot
@@ -179,7 +181,6 @@
 - tests/platforms/NPCX9.robot
 - tests/unit-tests/arm-gic-redistributor.robot
 - tests/unit-tests/python-engine.robot
-- tests/network-logging/network-logging.robot
 - tests/unit-tests/riscv-mret.robot
 - tests/platforms/X86.robot
 - tests/platforms/ACRN.robot
@@ -250,6 +251,9 @@
 - tests/platforms/focaltech-ft9001-zephyr.robot
 - tests/unit-tests/arm-cortex-m-mve.robot
 - tests/unit-tests/arm-cortex-m-signals.robot
+- tests/unit-tests/resd-arbitrary-timestamp.robot
+- tests/unit-tests/sysbus-data-race.robot
+- tests/platforms/ramn.robot
 
 # Do not use port 3333 in unit tests
 

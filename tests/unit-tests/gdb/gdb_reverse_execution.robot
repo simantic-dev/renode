@@ -277,7 +277,7 @@ Should Stop At Breakpoint On Previous Instruction
     Check And Run Gdb               riscv64-zephyr-elf-gdb
     Execute Command                 reverseExecMode true
     Command Gdb                     break *${ENTRYPOINT}+0x08
-    
+
     Command Gdb                     continue
     ${expected_pc}=                 Execute Command  sysbus.cpu PC
     Command Gdb                     stepi
@@ -291,7 +291,7 @@ Should Revert To The Beginning
     Check And Run Gdb               riscv64-zephyr-elf-gdb
     Execute Command                 reverseExecMode true
     Command Gdb                     break *${ENTRYPOINT}+0x08
-    
+
     Command Gdb                     continue
     Command Gdb                     reverse-continue
     ${result_icount}=               Execute Command  sysbus.cpu GetCurrentInstructionsCount
@@ -304,7 +304,7 @@ Should Not Stop On Deleted Breakpoint
     Execute Command                 reverseExecMode true
     Command Gdb                     break *${ENTRYPOINT}+0x08
     Command Gdb                     break *${ENTRYPOINT}+0x1a
-    
+
     Command Gdb                     continue
     ${expected_pc}=                 Execute Command  sysbus.cpu PC
     Command Gdb                     continue
@@ -358,3 +358,30 @@ Should Visit Both Branches
     Command Gdb                     continue
     Wait For Line On Uart           OK
 
+Should Step Back From Infinite Loop
+    [Tags]                          skip_windows
+    Check And Run GDB               riscv64-zephyr-elf-gdb
+    Execute Command                 autoSave true 0.1
+
+    ${snapshots_count_1}=           Execute Command  emulation SnapshotTracker Count
+    Command GDB                     break *${ENTRYPOINT}+0x08
+    Command GDB                     continue
+
+    ${expected_pc}=                 Execute Command  sysbus.cpu PC
+    ${expected_icount}=             Execute Command  sysbus.cpu GetCurrentInstructionsCount
+    Command GDB                     stepi
+
+    Execute Command                 sysbus.cpu IsHalted true
+    Execute Command                 p
+    Execute Command                 emulation RunFor "0.5"
+    ${snapshots_count2}=            Execute Command  emulation SnapshotTracker Count
+    IF  int($snapshots_count2, 16) - int($snapshots_count1, 16) < 2
+        Fail                            "Not enough snapshots were taken to test properly"
+    END
+    Command GDB                     reverse-stepi
+
+    ${result_pc}=                   Execute Command  sysbus.cpu PC
+    ${result_icount}=               Execute Command  sysbus.cpu GetCurrentInstructionsCount
+
+    Should Be Equal As Numbers      ${expected_pc}  ${result_pc}
+    Should Be Equal As Numbers      ${expected_icount}  ${result_icount}

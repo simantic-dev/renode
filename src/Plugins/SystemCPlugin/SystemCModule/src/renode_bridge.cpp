@@ -11,7 +11,8 @@
 #include <cstdlib>
 #include <chrono>
 #include <thread>
-#include <inttypes.h>
+#include <cinttypes>
+#include <array>
 #ifdef __linux__
 #include <fcntl.h>
 #include <unistd.h>
@@ -81,9 +82,9 @@ enum renode_action : uint8_t {
   // Socket: forward, backward
   // Request:
   //     data_length: ignored
-  //     address: ignored
+  //     address: signal number
   //     connection_index: ignored
-  //     payload: state of GPIO bitfield
+  //     payload: state of GPIO
   // Response:
   //     Identical to the request message.
   RESET = 5,
@@ -135,6 +136,24 @@ enum renode_action : uint8_t {
   // Response:
   //     address: duration of transaction in us
   //     Otherwise identical to the request message.
+  INIT_SECURE_VTOR = 10,
+  // Socket: backward only
+  // Request:
+  //     data_length: ignored
+  //     connection_index: ignored
+  //     address: secure vector table offset
+  //     payload: ignored
+  // Response:
+  //     Identical to the request message.
+  INIT_NON_SECURE_VTOR = 11,
+  // Socket: backward only
+  // Request:
+  //     data_length: ignored
+  //     connection_index: ignored
+  //     address: non-secure vector table offset
+  //     payload: ignored
+  // Response:
+  //     Identical to the request message.
 };
 
 #pragma pack(push, 1)
@@ -152,7 +171,9 @@ struct dmi_message {
   uint64_t start_address;
   uint64_t end_address;
   uint64_t mmf_offset;
-  char mmf_path[256];
+  uint32_t mmf_path_length;
+  char mmf_path[4096]; // A common value for PATH_MAX, hardcoded here for consistency if it is different on the host
+  uint64_t mapped_address;
 };
 #pragma pack(pop)
 
@@ -316,6 +337,11 @@ renode_bridge::renode_bridge(sc_core::sc_module_name name, const char *address,
     sensitive << gpio_ports_in[i];
   }
 
+  SC_METHOD(on_init_ns_vtor);
+  sensitive << init_vtor_ns_in;
+  SC_METHOD(on_init_s_vtor);
+  sensitive << init_vtor_s_in;
+
   bus_target_fw_handler.initialize(this, 0);
   cpu_target_fw_handler.initialize(this, 0);
 
@@ -425,12 +451,13 @@ void renode_bridge::forward_loop() {
       forward_connection->Send((char *)&message, sizeof(renode_message));
     } break;
     case renode_action::GPIOWRITE: {
-      for (int i = 0; i < NUM_GPIO; ++i) {
-        sc_core::sc_interface *iface = gpio_ports_out[i].get_interface();
-        if (iface != nullptr) {
-          gpio_ports_out[i]->write((message.payload & (1 << i)) != 0);
-        }
+      auto number = message.address;
+      auto value = message.payload;
+      sc_core::sc_interface *iface = gpio_ports_out[number].get_interface();
+      if (iface == nullptr) {
+        break;
       }
+      gpio_ports_out[number]->write(value == 1);
       forward_connection->Send((char *)&message, sizeof(renode_message));
     } break;
     case renode_action::INIT: {
@@ -489,30 +516,38 @@ void renode_bridge::handle_write(renode_bus_initiator_socket &socket, renode_mes
   wait(sc_core::SC_ZERO_TIME);
 }
 
+enum gpio_state {
+  GPIO_NOT_SENT = -1,
+  GPIO_LOW = 0,
+  GPIO_HIGH = 1
+};
+
 void renode_bridge::on_port_gpio() {
+  std::array<gpio_state, NUM_GPIO> last_sent_state;
+  last_sent_state.fill(GPIO_NOT_SENT);
   while (true) {
     // Wait for a change in any of the GPIO ports.
     wait();
 
-    uint64_t gpio_state = 0;
     for (int i = 0; i < NUM_GPIO; ++i) {
-      sc_core::sc_interface *iface = gpio_ports_in[i].get_interface();
-      if (iface != nullptr) {
-        if (gpio_ports_in[i]->read()) {
-          gpio_state |= (1ull << i);
-        } else {
-          gpio_state &= ~(1ull << i);
-        }
+      if (gpio_ports_in[i].get_interface() == nullptr) {
+        continue;
       }
+      gpio_state current = (gpio_state)gpio_ports_in[i]->read();
+      if (current == last_sent_state[i]) {
+        continue; // no change, skip
+      }
+      last_sent_state[i] = current;
+
+      renode_message message = {};
+      message.action = renode_action::GPIOWRITE;
+      message.address = i;
+      message.payload = current;
+
+      backward_connection->Send((char *)&message, sizeof(renode_message));
+      // Response is ignored.
+      backward_connection->Receive((char *)&message, sizeof(renode_message));
     }
-
-    renode_message message = {};
-    message.action = renode_action::GPIOWRITE;
-    message.payload = gpio_state;
-
-    backward_connection->Send((char *)&message, sizeof(renode_message));
-    // Response is ignored.
-    backward_connection->Receive((char *)&message, sizeof(renode_message));
   }
 }
 
@@ -554,6 +589,28 @@ void renode_bridge::service_backward_request(tlm::tlm_generic_payload &payload,
   }
 
   payload.set_response_status(tlm::TLM_OK_RESPONSE);
+}
+
+void renode_bridge::init_vtor(bool secure) {
+  auto &vtor_port = secure ? init_vtor_s_in : init_vtor_ns_in;
+  auto action = secure ? INIT_SECURE_VTOR : INIT_NON_SECURE_VTOR;
+  if (vtor_port.get_interface() == nullptr) {
+    return;
+  }
+  auto value = vtor_port->read();
+
+  renode_message message = {};
+  message.action = action;
+  message.address = value;
+  backward_connection->Send((char *)&message, sizeof(renode_message));
+}
+
+void renode_bridge::on_init_ns_vtor() {
+  init_vtor(false);
+}
+
+void renode_bridge::on_init_s_vtor() {
+  init_vtor(true);
 }
 
 // ================================================================================
@@ -623,7 +680,10 @@ bool renode_bridge::service_backward_request_dmi(tlm::tlm_generic_payload &paylo
   bool dmi_allowed = response.allowed;
 
   if (dmi_allowed && response.mmf_offset % sysconf(_SC_PAGESIZE)) {
-      fprintf(stderr, "[ERROR] invalid offset for MMF %s\n", response.mmf_path);
+      fprintf(stderr, "[ERROR] invalid page-unaligned offset 0x%" PRIx64 " for MMF %s\n",
+        response.mmf_offset,
+        response.mmf_path
+      );
       dmi_allowed = false;
   }
 

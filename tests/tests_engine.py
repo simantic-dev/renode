@@ -8,7 +8,9 @@ import argparse
 import subprocess
 import yaml
 import multiprocessing
-from dataclasses import dataclass
+from typing import Any
+from pathlib import Path
+import segmenting
 
 this_path = os.path.abspath(os.path.dirname(__file__))
 registered_handlers = []
@@ -96,6 +98,12 @@ def prepare_parser():
                         default=False,
                         help="Buildbot mode. Before running tests prepare environment, i.e., create tap0 interface.")
 
+    parser.add_argument("--dry-run",
+                        dest="dry_run",
+                        action="store_true",
+                        default=False,
+                        help="Loads the given tests and splits them into subsets (if --subsets is specified). Does not run any tests.")
+
     parser.add_argument("-t", "--tests",
                         dest="tests_file",
                         action="store",
@@ -171,11 +179,7 @@ def prepare_parser():
                         const="dotnet",
                         help="Flag is deprecated and has no effect.")
 
-    parser.add_argument("--subset",
-                        dest="subset",
-                        default="1/1",
-                        type=subset,
-                        help="Run a subset of the tests. E.g. '1/2' for running half of the tests and '2/2' for the other half. This is useful when splitting up test execution between runners.")
+    segmenting.add_args(parser)
 
     if platform != "win32":
         parser.add_argument("-p", "--port",
@@ -191,29 +195,6 @@ def prepare_parser():
                             help="Suspend test waiting for a debugger.")
 
     return parser
-
-
-@dataclass
-class Subset:
-    segment: int
-    max_segments: int
-
-    def __init__(self, segment: int, max_segments: int) -> None:
-        if segment <= 0 or segment > max_segments:
-            raise ValueError(f"`segment` must be > 0 and <= {max_segments} but it is {segment}")
-        if max_segments <= 0:
-            raise ValueError(f"`max_segments` must be at least 1 but it is {max_segments}")
-
-        self.segment = segment
-        self.max_segments = max_segments
-
-
-def subset(text: str) -> Subset: 
-    values = text.split("/")
-    if len(values) != 2:
-        raise ValueError("subset string format must be integer/integer")
-
-    return Subset(int(values[0]), int(values[1]))
 
 
 def call_or_die(to_call, error_message):
@@ -274,6 +255,11 @@ def handle_options(options):
 
     options.configuration = 'Debug' if options.debug_mode else 'Release'
 
+    if options.stats_file:
+        options.stats = segmenting.parse_stats_file(options.stats_file)
+    else:
+        options.stats = {}
+
     if options.remote_server_full_directory is not None:
         if not os.path.isabs(options.remote_server_full_directory):
             options.remote_server_full_directory = os.path.join(this_path, options.remote_server_full_directory)
@@ -309,6 +295,8 @@ def split_tests_into_groups(tests, test_type):
             return False
         for handler in registered_handlers:
             if (test_type == 'all' or handler['type'] == test_type) and path.endswith(handler['extension']):
+                # Ensure consistent path separators, even on Windows
+                path = Path(path).as_posix()
                 result.append(handler['creator'](path))
         return True
 
@@ -510,45 +498,57 @@ def failed_due_to_crash(options, groups_segment) -> bool:
     return False
 
 
-def segment_groups(options):
-    """
-    Splits the test groups into equally sized (best-effort) segments and returns the current one.
+def verify_suite_files_unique(groups: dict[str, Any]):
+    suite_file_paths = [
+        Path(suite.path) for suites in groups.values() for suite in suites
+    ]
 
-    Segment size and current segment is based on the values provided by the `--subset` option.
+    paths_by_filename = defaultdict(list)
+    for path in suite_file_paths:
+        paths_by_filename[path.name].append(path)
 
-    Remainder items are distributed into the first segments.
+    duplicates = {
+        filename: paths
+        for filename, paths in paths_by_filename.items()
+        if len(paths) > 1
+    }
 
-    E.g. splitting this array into 4 segments (remainders are marked with *):
-      input: [0, 1, 2, 3, 4, 5, 6, 7, 8*, 9*, 10*]
-    seg 1/4: [0, 1,  8*]
-    seg 2/4: [2, 3,  9*]
-    seg 3/4: [4, 5, 10*]
-    seg 4/4: [6, 7]
-    """
-    groups = list(options.tests.items()) # so we can slice it up
-    nr_groups = len(groups)
-    max_segments = options.subset.max_segments
+    if duplicates:
+        print("ERROR: Duplicate suite file names are not allowed. Found duplicates:")
+        for filename, paths in duplicates.items():
+            print(f"  {filename}:")
+            for path in paths:
+                print(f"    - {path}")
+        sys.exit(1)
 
-    # Make the chunk size small enough that each segment can have at least this many test groups.
-    chunk_size = nr_groups // max_segments # always rounds down
-    segment_num = options.subset.segment
-    segment_index = segment_num - 1 # input is 1-indexed, we want 0-indexed
 
-    # Split into "perfect" segments, ignoring the remainder.
-    segment_start_index = segment_index * chunk_size
-    groups_segment = groups[segment_start_index : segment_start_index + chunk_size]
+def print_suite_files(segment: segmenting.GroupsSegment):
+    segment_num = segment.subset.segment
+    max_segments = segment.subset.max_segments 
+    segment_test_file_paths = segment.test_file_paths
+    groups_segment  = segment.groups
 
-    # Get the nth remainder, unique per segment. 
-    # There cannot be more than one remainder per segment if they're distributed evenly,
-    # otherwise the chunk size would have been larger.
-    end_of_segments_index = max_segments * chunk_size
-    remainder_index = end_of_segments_index + segment_index
-    # We may have run out of remainders, so check that it exists before appending.
-    if remainder_index < nr_groups:
-        groups_segment.append(groups[remainder_index])
+    test_file_path_count = len(segment_test_file_paths)
+    suites_list_header = (
+        (
+            f"Will run segment {segment_num}/{max_segments}, "
+            f"consisting of the following {test_file_path_count} test files:"
+        )
+        if max_segments > 1
+        else f"Will run the following {test_file_path_count} test files:"
+    )
+    print(suites_list_header)
 
-    segment_test_file_paths = [suite.path for (_,suites) in groups_segment for suite in suites]
-    return segment_num, max_segments, segment_test_file_paths, groups_segment
+    for group, suites in groups_segment:
+        is_group = not group.startswith("__NONE_")
+        padding = ""
+        if is_group:
+            print(f"  - {group}:")
+            padding = "  "
+        for suite in suites:
+            print(f"  {padding}- {suite.path}")
+
+    print("")
 
 
 def init_worker_process(counter):
@@ -574,21 +574,26 @@ def run():
 
     configure_output(options)
 
+    verify_suite_files_unique(options.tests)
+
     print("Preparing suites")
 
-    args = []
-    segment_num, max_segments, segment_test_file_paths, groups_segment = segment_groups(options)
+    segment = segmenting.segment_groups(options)
+    segment_num = segment.subset.segment
+    max_segments = segment.subset.max_segments 
+    segment_test_file_paths = segment.test_file_paths
+    groups_segment  = segment.groups
     total_number_of_suites = len(segment_test_file_paths)
+
+    print_suite_files(segment)
+
+    if options.dry_run:
+        print("Exiting early due to --dry-run")
+        exit(0)
+
+    args = []
     for (_, group_suites) in groups_segment:
         args.append((group_suites, total_number_of_suites, options))
-
-    test_file_path_count = len(segment_test_file_paths)
-    if max_segments > 1: 
-        print(
-          f"Will run segment {segment_num}/{max_segments}, "
-          f"consisting of the following {test_file_path_count} test files:"
-        )
-        [print(f"  - {path}") for path in segment_test_file_paths]
 
     for (group, _) in groups_segment:
         for suite in options.tests[group]:
@@ -622,7 +627,7 @@ def run():
         # this get is a hack - see: https://stackoverflow.com/a/1408476/980025
         # we use `async` + `get` in order to allow "Ctrl+C" to be handled correctly;
         # otherwise it would not be possible to abort tests in progress
-        tests_failed, logs = zip(*pool.map_async(run_test_group, args).get(999999))
+        tests_failed, logs = zip(*pool.map_async(run_test_group, args, chunksize=1).get(999999))
         pool.close()
         print("Waiting for all processes to exit")
         pool.join()
@@ -651,7 +656,7 @@ def run():
         options.output.close()
 
     if max_segments > 1: 
-        print( f"Ran segment {segment_num}/{max_segments}, consisting of {test_file_path_count} test files.")
+        print( f"Ran segment {segment_num}/{max_segments}, consisting of {total_number_of_suites} test files.")
     if tests_failed:
         print("Some tests failed :( See the list of failed tests below and logs for details!")
         print_failed_tests(options)
