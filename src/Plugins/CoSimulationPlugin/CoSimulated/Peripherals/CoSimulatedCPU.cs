@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2010-2026 Antmicro
+// Copyright (c) 2010-2024 Antmicro
 //
 // This file is licensed under the MIT License.
 // Full license text is available in 'licenses/MIT.txt'.
@@ -166,10 +166,9 @@ namespace Antmicro.Renode.Peripherals.CoSimulated
             get => SimulationFilePath;
             set
             {
-                if(RuntimeInfo.IsLinux())
-                {
-                    SimulationFilePath = value;
-                }
+#if PLATFORM_LINUX
+                SimulationFilePath = value;
+#endif
             }
         }
 
@@ -178,10 +177,9 @@ namespace Antmicro.Renode.Peripherals.CoSimulated
             get => SimulationFilePath;
             set
             {
-                if(RuntimeInfo.IsWindows())
-                {
-                    SimulationFilePath = value;
-                }
+#if PLATFORM_WINDOWS
+                SimulationFilePath = value;
+#endif
             }
         }
 
@@ -190,10 +188,9 @@ namespace Antmicro.Renode.Peripherals.CoSimulated
             get => SimulationFilePath;
             set
             {
-                if(RuntimeInfo.IsMacOS())
-                {
-                    SimulationFilePath = value;
-                }
+#if PLATFORM_OSX
+                SimulationFilePath = value;
+#endif
             }
         }
 
