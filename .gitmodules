@@ -48,6 +48,3 @@
 [submodule "src/UI"]
 	path = src/UI
 	url = https://github.com/antmicro/renode-ui.git
-[submodule "src/Analog"]
-	path = src/Analog
-	url = git@github.com:simantic-dev/renode-ms.git
