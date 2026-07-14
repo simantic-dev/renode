@@ -1,6 +1,7 @@
 [submodule "src/Infrastructure"]
 	path = src/Infrastructure
 	url = git@github.com:simantic-dev/renode-infrastructure.git
+	branch = simantic-main
 [submodule "lib/termsharp"]
 	path = lib/termsharp
 	url = https://github.com/antmicro/termsharp.git
