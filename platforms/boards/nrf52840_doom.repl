@@ -2,11 +2,11 @@ using "platforms/cpus/nrf52840.repl"
 
 // FICR (factory info) + UICR (user config) as real memory, not SVD stubs.
 // Bare-metal nRF startup (system_nrf52840.c) reads NRF_UICR->NFCPINS bit0 and,
-// if set (erased-flash default), clears it via NVMC and issues NVIC_SystemReset()
-// to apply — so these must (a) power up as erased flash (0xFF) and (b) persist
-// writes across the soft reset, else the SoC loops in reset forever. Pre-loaded
-// with an all-0xFF image in the boot script. (Candidate to upstream into the
-// base nrf52840.repl — every bare-metal nRF52840 image needs this.)
+// if set, clears it via NVMC and issues NVIC_SystemReset() to apply. As an SVD
+// stub the clear didn't persist, so the SoC cleared/reset/re-cleared forever;
+// as real MappedMemory the write persists across the soft reset and boot
+// proceeds. The persistence is what matters — no erased-0xFF image is needed.
+// (Candidate to upstream into the base nrf52840.repl.)
 ficr: Memory.MappedMemory @ sysbus 0x10000000
     size: 0x1000
 
