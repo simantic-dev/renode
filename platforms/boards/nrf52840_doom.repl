@@ -1,0 +1,93 @@
+using "platforms/cpus/nrf52840.repl"
+
+// FICR (factory info) + UICR (user config) as real memory, not SVD stubs.
+// Bare-metal nRF startup (system_nrf52840.c) reads NRF_UICR->NFCPINS bit0 and,
+// if set, clears it via NVMC and issues NVIC_SystemReset() to apply. As an SVD
+// stub the clear didn't persist, so the SoC cleared/reset/re-cleared forever;
+// as real MappedMemory the write persists across the soft reset and boot
+// proceeds. The persistence is what matters — no erased-0xFF image is needed.
+// (Candidate to upstream into the base nrf52840.repl.)
+ficr: Memory.MappedMemory @ sysbus 0x10000000
+    size: 0x1000
+
+uicr: Memory.MappedMemory @ sysbus 0x10001000
+    size: 0x1000
+
+// NVMC (flash controller). The base repl leaves it as an SVD stub, so ERASEPAGE
+// is a no-op. The Doom port builds a ~756KB decompressed-level write-back cache
+// in internal flash: it erases a page then calls programFlashWord(), which only
+// writes words that currently read 0xFFFFFFFF and then verifies the readback,
+// trapping in an infinite loop on mismatch. Without a real page-erase the words
+// aren't 0xFFFFFFFF and it traps. This model actually clears the 4KB page to 0xFF.
+nvmc: MTD.NRF52840_NVMC @ sysbus 0x4001E000
+
+// 16MB W25Q128 QSPI flash, holding the Doom WAD. XIP reads land here directly
+// (bypassing the QSPI controller's SPI protocol path), mirroring the zynqmp
+// quadSpiFlash / GenericSpiFlash precedent.
+qspi_flash_mem: Memory.MappedMemory @ sysbus 0x12000000
+    size: 0x1000000
+
+qspi: SPI.NRF52840_QSPI @ sysbus 0x40029000
+    -> nvic@41
+
+// NRF52840_QSPI is a plain register-block stub (not an SPI-master container
+// like NRF52840_SPI), so there's no SPI-protocol slave to attach here; the WAD
+// is read-only XIP, so qspi_flash_mem alone (pre-loaded via LoadBinary) is
+// sufficient and GenericSpiFlash's byte-protocol path is not wired up.
+
+// qspiInit() (USE_SPI_FOR_QSPI_INIT=1 in the firmware) bit-bangs the flash's
+// SPI-mode bring-up (MFG ID read, enable-QSPI-mode, drive-strength) through
+// plain SPIM0 at the shared SPIM0/TWI0 base 0x40003000 *before* handing off
+// to the QSPI peripheral above. The base nrf52840.repl models this base as
+// twi0 (I2C) since the gamepad uses twi1/0x40004000 instead - override it here
+// with the SPI model so those register writes land on a real SPI master
+// instead of the I2C stub (which never raises EVENTS_END/EVENTS_STOPPED for
+// SPIM writes, hanging qspiInit's wait loops).
+twi0: @ none
+
+spi0: SPI.NRF52840_SPI @ sysbus 0x40003000
+    easyDMA: true
+    -> nvic@3
+
+// Real W25Q128 flash model backing SPIM0's SPI-mode bring-up, sharing the
+// same 16MB backing memory as the QSPI XIP window above (mirrors the zynqmp
+// quadSpiFlash / GenericSpiFlash precedent). CS is PIN_QSPI_NCS = P0.20 on
+// the Adafruit CLUE (INTERNAL_CLUE_FLASH path), toggled directly via
+// NRF_P0->OUTCLR/OUTSET in qspi.c's FLASH_NCS_LOW/HIGH.
+w25q128: SPI.GenericSpiFlash @ spi0
+    underlyingMemory: qspi_flash_mem
+    manufacturerId: 0xEF
+    memoryType: 0x40
+    capacityCode: 0x18
+
+// SPIM3 is the Doom firmware's display SPI master; unlike spi2 it needs
+// easyDMA for the RAMWR pixel-burst path.
+spi3: SPI.NRF52840_SPI @ sysbus 0x4002F000
+    easyDMA: true
+    -> nvic@47
+
+// columnOffset 80: firmware builds with DISPLAY_INVERT_XY + MADCTL MV, so its
+// CASET addresses GRAM columns 320-240=80 .. 319 for the 240-wide visible panel.
+lcd: Video.ST7789 @ spi3
+    columnOffset: 80
+
+gpio0:
+    13 -> lcd@0 // D/C = P0.13 (PIN_DISPLAY_DC on the CLUE)
+    12 -> lcd@1 // CS  = P0.12 (PIN_DISPLAY_NCS on the CLUE)
+    20 -> w25q128@0
+
+// initI2cGamepad()/updateI2cGamepad() in the firmware talk to the CLUE
+// gamepad's button-reading I2C device via i2cSendAndWait()/i2cRead(); without
+// a slave here EVENTS_STOPPED never fires and the firmware spins forever in
+// i2cSendAndWait waiting for the transfer to complete. Disassembly of the
+// actual firmware shows this device sits at 7-bit address 0x50 (NOT 0x27 as
+// initially assumed from keyboard.c/EXPANDER_I2C_ADDRESS) and is driven with
+// an Adafruit-Seesaw-style two-byte [module][function] register header
+// rather than a plain MCP23008 single-byte register pointer (initI2cGamepad
+// writes module=1/GPIO with function regs 3=DIRCLR_BULK, 11=PULLENSET,
+// 5=GPIO_BULK_SET, 8=GPIO_INTENSET -- textbook seesaw INPUT_PULLUP setup).
+// AdafruitSeesawGamepad.cs implements the real seesaw [module][function]
+// header protocol (see that file) and defaults to reporting no buttons
+// pressed / a centered joystick, which is what the firmware boot path needs
+// to skip the YMODEM/USB WAD-upload chord and fall through to the renderer.
+gamepad: I2C.AdafruitSeesawGamepad @ twi1 0x50
